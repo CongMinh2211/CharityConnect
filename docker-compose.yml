@@ -1,0 +1,203 @@
+name: charityconnect
+
+services:
+  web:
+    build: ./web
+    depends_on:
+      - gateway
+    ports:
+      - "5173:80"
+
+  gateway:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      identity-service:
+        condition: service_healthy
+      campaign-service:
+        condition: service_healthy
+      donation-service:
+        condition: service_healthy
+      assistant-service:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+  identity-service:
+    build: ./services/identity
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgresql://identity:identity@identity-db:5432/identity
+      JWT_SECRET: ${JWT_SECRET:-local-charityconnect-secret}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-internal-token}
+      REDIS_URL: redis://redis:6379
+      PUBLIC_WEB_URL: ${PUBLIC_WEB_URL:-http://127.0.0.1:5173}
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
+      GMAIL_REFRESH_TOKEN: ${GMAIL_REFRESH_TOKEN:-}
+      GMAIL_SENDER_EMAIL: ${GMAIL_SENDER_EMAIL:-}
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - identity-uploads:/app/uploads
+    depends_on:
+      identity-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  campaign-service:
+    build: ./services/campaign
+    environment:
+      PORT: 3002
+      DATABASE_URL: postgresql://campaign:campaign@campaign-db:5432/campaign
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-local-charityconnect-secret}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-internal-token}
+      IDENTITY_SERVICE_URL: http://identity-service:3001
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - campaign-uploads:/app/uploads
+    depends_on:
+      campaign-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  donation-service:
+    build: ./services/donation
+    environment:
+      PORT: 8000
+      DATABASE_URL: postgresql://donation:donation@donation-db:5432/donation
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-local-charityconnect-secret}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-internal-token}
+      CAMPAIGN_SERVICE_URL: http://campaign-service:3002
+      ANCHOR_RPC_URL: ${ANCHOR_RPC_URL:-}
+      ANCHOR_PRIVATE_KEY: ${ANCHOR_PRIVATE_KEY:-}
+      ANCHOR_CHAIN_ID: ${ANCHOR_CHAIN_ID:-11155111}
+      ANCHOR_EXPLORER_URL: ${ANCHOR_EXPLORER_URL:-https://sepolia.etherscan.io/tx}
+    depends_on:
+      donation-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  assistant-service:
+    build: ./services/assistant
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      CAMPAIGN_SERVICE_URL: http://campaign-service:3002
+      DONATION_SERVICE_URL: http://donation-service:8000
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  identity-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: identity
+      POSTGRES_USER: identity
+      POSTGRES_PASSWORD: identity
+    volumes:
+      - identity-db-data:/var/lib/postgresql/data
+      - ./services/identity/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U identity -d identity"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  campaign-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: campaign
+      POSTGRES_USER: campaign
+      POSTGRES_PASSWORD: campaign
+    volumes:
+      - campaign-db-data:/var/lib/postgresql/data
+      - ./services/campaign/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U campaign -d campaign"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  donation-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: donation
+      POSTGRES_USER: donation
+      POSTGRES_PASSWORD: donation
+    volumes:
+      - donation-db-data:/var/lib/postgresql/data
+      - ./services/donation/sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U donation -d donation"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+
+  sonarqube:
+    image: sonarqube:10.7-community
+    environment:
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    ports:
+      - "9000:9000"
+    profiles: ["quality"]
+
+volumes:
+  identity-db-data:
+  campaign-db-data:
+  donation-db-data:
+  redis-data:
+  identity-uploads:
+  campaign-uploads:

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="description" content="CharityConnect — kết nối người quyên góp với các chiến dịch từ thiện đã xác minh." />
+    <title>CharityConnect</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      if (window.location.protocol === "file:") {
+        document.getElementById("root").innerHTML = '<main style="max-width:720px;margin:64px auto;padding:32px;font-family:system-ui;border:1px solid #dbe4ea;border-radius:18px"><h1 style="color:#047857">CharityConnect cần chạy qua web server</h1><p>Không mở trực tiếp file <code>index.html</code>. Hãy chạy <code>START_FRONTEND.cmd</code> ở thư mục charityconnect, sau đó mở <a href="http://localhost:5173">http://localhost:5173</a>.</p><p>Muốn chạy cả backend, dùng <code>START_ALL.cmd</code> sau khi cài Docker Desktop.</p></main>';
+      }
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

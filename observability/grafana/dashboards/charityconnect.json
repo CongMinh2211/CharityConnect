@@ -1,0 +1,21 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    { "type": "timeseries", "title": "Request rate", "targets": [{ "expr": "sum(rate({__name__=~\"identity_http_requests_total|campaign_http_requests_total|donation_http_requests_total\"}[1m])) by (job)" }], "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 } },
+    { "type": "timeseries", "title": "Error rate", "targets": [{ "expr": "sum(rate({__name__=~\"identity_http_requests_total|campaign_http_requests_total|donation_http_requests_total\",status=~\"5..\"}[5m])) / clamp_min(sum(rate({__name__=~\"identity_http_requests_total|campaign_http_requests_total|donation_http_requests_total\"}[5m])), 1)" }], "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 } },
+    { "type": "stat", "title": "Donations completed", "targets": [{ "expr": "sum(donation_completed_total)" }], "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 } },
+    { "type": "stat", "title": "Donation failures", "targets": [{ "expr": "sum(donation_failed_total)" }], "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 } },
+    { "type": "stat", "title": "Services up", "targets": [{ "expr": "sum(up{job=~\"identity|campaign|donation\"})" }], "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 } },
+    { "type": "stat", "title": "Hash-chain integrity", "targets": [{ "expr": "min(donation_ledger_chain_integrity)" }], "gridPos": { "h": 6, "w": 8, "x": 0, "y": 14 } },
+    { "type": "timeseries", "title": "Ledger append / failures", "targets": [{ "expr": "sum(rate(donation_ledger_appends_total[5m])) by (event_type)" }, { "expr": "sum(rate(donation_ledger_append_failures_total[5m]))" }], "gridPos": { "h": 6, "w": 8, "x": 8, "y": 14 } },
+    { "type": "stat", "title": "Evidence review p95", "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(campaign_impact_review_duration_seconds_bucket[24h])) by (le))" }], "gridPos": { "h": 6, "w": 8, "x": 16, "y": 14 } }
+  ],
+  "schemaVersion": 39,
+  "tags": ["charityconnect", "spqm"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "CharityConnect Level 3",
+  "uid": "charityconnect-level3",
+  "version": 1
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@charityconnect/web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint src --ext .ts,.tsx",
+    "test": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.62.7",
+    "lucide-react": "^0.468.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.1.1",
+    "recharts": "^3.8.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^2.1.8",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.16.0",
+    "globals": "^17.6.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.16",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.61.1",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8"
+  }
+}

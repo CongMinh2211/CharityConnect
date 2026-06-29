@@ -1,5 +1,7 @@
 import jwt from "jsonwebtoken";
 import request from "supertest";
+import fs from "node:fs";
+import path from "node:path";
 
 const mockRedisClient = {
   on: jest.fn(), connect: jest.fn().mockResolvedValue(undefined), get: jest.fn(), setEx: jest.fn(), del: jest.fn(),
@@ -273,5 +275,147 @@ describe("campaign HTTP API", () => {
       .attach("evidence", Buffer.from("%PDF-1.4 proof"), { filename: "proof.pdf", contentType: "application/pdf" });
     expect(response.status).toBe(409);
     expect(mockConnection.query).toHaveBeenCalledWith("ROLLBACK");
+  });
+
+  it("reads and updates financial plans with budget guards", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ id: "c1", goal_amount: "10000000" }] as never)
+      .mockResolvedValueOnce([{ id: budgetId, label: "Xay dung", planned_amount: "10000000", actual_amount: "0", sort_order: 0 }] as never)
+      .mockResolvedValueOnce([{ id: milestoneId, title: "Hoan thanh", status: "PLANNED" }] as never);
+    const publicPlan = await request(app).get("/campaigns/c1/financial-plan");
+    expect(publicPlan.status).toBe(200);
+    expect(publicPlan.body.goal_amount).toBe(10000000);
+
+    mockConnection.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{ id: "c1", goal_amount: "10000000", status: "DRAFT" }] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({});
+    const body = {
+      budget_items: [{ label: "Xay dung", planned_amount: 10000000 }],
+      milestones: [{ title: "Hoan thanh", description: "Nghiem thu", target_date: "2026-12-31", target_amount: 10000000 }],
+    };
+    const updated = await request(app).put("/organization/campaigns/c1/financial-plan").set("Authorization", `Bearer ${orgToken}`).send(body);
+    expect(updated.status).toBe(200);
+    expect(mockConnection.query).toHaveBeenCalledWith("COMMIT");
+
+    mockConnection.query.mockReset();
+    mockConnection.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{ id: "c1", goal_amount: "10000000", status: "DRAFT" }] })
+      .mockResolvedValueOnce({});
+    const mismatch = await request(app).put("/organization/campaigns/c1/financial-plan").set("Authorization", `Bearer ${orgToken}`).send({
+      budget_items: [{ label: "Thieu tien", planned_amount: 1 }],
+      milestones: [{ title: "Hoan thanh", target_date: "2026-12-31", target_amount: 1 }],
+    });
+    expect(mismatch.status).toBe(409);
+  });
+
+  it("moves milestones and notifies followers", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ id: milestoneId, status: "PLANNED", title: "Moc 1", campaign_title: "Chien dich" }] as never)
+      .mockResolvedValueOnce([{ id: milestoneId, status: "IN_PROGRESS" }] as never)
+      .mockResolvedValueOnce([] as never);
+    const moved = await request(app).patch(`/organization/campaigns/c1/milestones/${milestoneId}/status`).set("Authorization", `Bearer ${orgToken}`).send({ status: "IN_PROGRESS" });
+    expect(moved.status).toBe(200);
+
+    queryMock.mockResolvedValueOnce([{ id: milestoneId, status: "SUBMITTED", title: "Moc 1", campaign_title: "Chien dich" }] as never);
+    expect((await request(app).patch(`/organization/campaigns/c1/milestones/${milestoneId}/status`).set("Authorization", `Bearer ${orgToken}`).send({ status: "IN_PROGRESS" })).status).toBe(409);
+  });
+
+  it("soft-deletes draft campaigns but keeps approved campaigns immutable", async () => {
+    queryMock.mockResolvedValueOnce([{ id: "c1", status: "DRAFT", title: "Draft" }] as never).mockResolvedValueOnce([{ id: "c1", status: "DRAFT", deleted_at: new Date() }] as never);
+    expect((await request(app).delete("/organization/campaigns/c1").set("Authorization", `Bearer ${orgToken}`)).status).toBe(200);
+    queryMock.mockResolvedValueOnce([{ id: "c1", status: "APPROVED", title: "Approved" }] as never);
+    expect((await request(app).delete("/organization/campaigns/c1").set("Authorization", `Bearer ${orgToken}`)).status).toBe(409);
+  });
+
+  it("scores campaign risks and serves campaign audit logs", async () => {
+    queryMock.mockResolvedValueOnce([{
+      id: "c-risk", title: "Risky", organization_name: "Org", status: "APPROVED",
+      raised_amount: "1000000", goal_amount: "10000000", report_overdue: true,
+      overdue_milestones: "2", rejected_reports: "2", stale_pending: "1",
+      closing_soon_low: true, escrow_mismatch: true,
+    }] as never);
+    const risks = await request(app).get("/admin/campaign-risks").set("Authorization", `Bearer ${adminToken}`);
+    expect(risks.status).toBe(200);
+    expect(risks.body[0].score).toBe(100);
+    expect(risks.body[0].level).toBe("HIGH");
+
+    queryMock.mockResolvedValueOnce([{ id: "audit-1", action: "CAMPAIGN_UPDATED" }] as never);
+    expect((await request(app).get("/admin/audit-logs/campaign?limit=10").set("Authorization", `Bearer ${adminToken}`)).body[0].action).toBe("CAMPAIGN_UPDATED");
+  });
+
+  it("serves verified evidence files", async () => {
+    const evidencePath = path.join(process.cwd(), "tmp-evidence.pdf");
+    fs.writeFileSync(evidencePath, "%PDF-1.4 proof");
+    queryMock.mockResolvedValueOnce([{ stored_path: evidencePath, original_name: "proof.pdf" }] as never);
+    const response = await request(app).get("/impact-evidence/e1");
+    expect(response.status).toBe(200);
+    fs.rmSync(evidencePath, { force: true });
+  });
+
+  it("edits, submits and soft-deletes rejected impact reports", async () => {
+    const reportBody = {
+      title: "Bao cao da sua",
+      description: "Noi dung bao cao da duoc bo sung day du.",
+      amountUsed: 12000000,
+      reportDate: "2026-06-20",
+      milestoneId,
+      allocations: [{ budget_item_id: budgetId, amount: 12000000 }],
+    };
+    mockConnection.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{ id: "r1", status: "REJECTED", campaign_id: "c1", raised_amount: "50000000" }] })
+      .mockResolvedValueOnce({ rows: [{ id: budgetId }] })
+      .mockResolvedValueOnce({ rows: [{ total: "0" }] })
+      .mockResolvedValueOnce({ rows: [{ id: "r1", status: "DRAFT" }] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({});
+    const edited = await request(app).patch("/organization/impact-reports/r1").set("Authorization", `Bearer ${orgToken}`).send(reportBody);
+    expect(edited.status).toBe(200);
+
+    queryMock
+      .mockResolvedValueOnce([{ count: "1" }] as never)
+      .mockResolvedValueOnce([{ id: "r1", status: "DRAFT" }] as never)
+      .mockResolvedValueOnce([{ id: "r1", status: "PENDING_REVIEW" }] as never);
+    expect((await request(app).post("/organization/impact-reports/r1/submit").set("Authorization", `Bearer ${orgToken}`)).status).toBe(200);
+
+    queryMock
+      .mockResolvedValueOnce([{ id: "r1", status: "REJECTED" }] as never)
+      .mockResolvedValueOnce([{ id: "r1", status: "REJECTED", deleted_at: new Date() }] as never);
+    expect((await request(app).delete("/organization/impact-reports/r1").set("Authorization", `Bearer ${orgToken}`)).status).toBe(200);
+
+    queryMock.mockResolvedValueOnce([{ id: "r1", status: "VERIFIED" }] as never);
+    expect((await request(app).delete("/organization/impact-reports/r1").set("Authorization", `Bearer ${orgToken}`)).status).toBe(409);
+  });
+
+  it("rejects impact reports and rolls milestone back to in progress", async () => {
+    mockConnection.query
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({ rows: [{ id: "r1", campaign_id: "c1", campaign_title: "C", title: "R", amount_used: "5000", status: "PENDING_REVIEW", milestone_id: milestoneId }] })
+      .mockResolvedValueOnce({ rows: [{ id: "r1", status: "REJECTED" }] })
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({})
+      .mockResolvedValueOnce({});
+    const rejected = await request(app).patch("/admin/impact-reports/r1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "REJECTED", reason: "Can bo sung" });
+    expect(rejected.status).toBe(200);
+    expect(mockConnection.query).toHaveBeenCalledWith("COMMIT");
+  });
+
+  it("handles internal not-found and organization campaign-id lookup", async () => {
+    queryMock.mockResolvedValueOnce([] as never);
+    expect((await request(app).get("/internal/campaigns/missing/donation-eligibility").set("x-internal-token", "local-internal-token")).status).toBe(404);
+    queryMock.mockResolvedValueOnce([] as never);
+    expect((await request(app).get("/internal/campaigns/missing/owner").set("x-internal-token", "local-internal-token")).status).toBe(404);
+    queryMock.mockResolvedValueOnce([{ id: "c1" }, { id: "c2" }] as never);
+    expect((await request(app).get("/internal/organizations/org-1/campaign-ids").set("x-internal-token", "local-internal-token")).body.campaign_ids).toEqual(["c1", "c2"]);
   });
 });

@@ -106,6 +106,25 @@ def test_history_and_receipt(client):
     assert api.get(f"/donations/{uuid4()}/receipt").status_code == 404
 
 
+def test_annual_statement_returns_pdf_for_donor(client):
+    api, db, _http, _redis = client
+    year = datetime.now(timezone.utc).year
+    db.fetch_results.append([
+        {
+            "campaign_title": "Lop hoc vung cao",
+            "amount": 125000,
+            "created_at": datetime(year, 6, 21, tzinfo=timezone.utc),
+            "receipt_number": "CC-2026-000001",
+            "proof_status": "CONFIRMED",
+        }
+    ])
+    response = api.get(f"/donations/me/annual-statement?year={year}")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content.startswith(b"%PDF")
+    assert api.get("/donations/me/annual-statement?year=1999").status_code == 422
+
+
 def test_organization_view_masks_anonymous_donors(client):
     api, db, http, _redis = client
     organization_id = "00000000-0000-0000-0000-000000000001"

@@ -1,0 +1,22 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "CharityConnect Campaign Service", "version": "1.0.0" },
+  "paths": {
+    "/campaigns": { "get": { "summary": "Danh sách chiến dịch công khai", "responses": { "200": { "description": "Approved campaigns" } } } },
+    "/campaigns/{id}": { "get": { "summary": "Chi tiết chiến dịch", "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Campaign" }, "404": { "description": "Not found" } } } },
+    "/organization/campaigns": { "get": { "summary": "Chiến dịch của tổ chức", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Campaigns" } } }, "post": { "summary": "Tạo bản nháp", "security": [{ "bearerAuth": [] }], "responses": { "201": { "description": "Draft created" } } } },
+    "/organization/campaigns/{id}/submit": { "post": { "summary": "Nộp duyệt", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Submitted" } } } },
+    "/organization/campaigns/{id}/close": { "post": { "summary": "Đóng chiến dịch", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Closed" } } } },
+    "/admin/campaigns": { "get": { "summary": "Hàng đợi kiểm duyệt", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Queue" } } } },
+    "/admin/campaigns/{id}/status": { "patch": { "summary": "Duyệt hoặc từ chối chiến dịch", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Reviewed" } } } },
+    "/campaigns/{id}/impact-reports": { "get": { "summary": "Báo cáo tác động đã xác minh", "responses": { "200": { "description": "Verified impact reports" } } } },
+    "/organization/campaigns/{id}/impact-reports": { "get": { "summary": "Báo cáo của tổ chức", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Impact reports" } } }, "post": { "summary": "Nộp báo cáo và 1-5 bằng chứng", "security": [{ "bearerAuth": [] }], "responses": { "201": { "description": "Submitted" } } } },
+    "/admin/impact-reports": { "get": { "summary": "Hàng đợi báo cáo tác động", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Review queue" } } } },
+    "/admin/impact-reports/{id}/status": { "patch": { "summary": "Duyệt/từ chối báo cáo và cập nhật escrow mô phỏng", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Reviewed and queued for hash-chain" } } } },
+    "/campaigns/{id}/contract": { "get": { "summary": "Trạng thái escrow mô phỏng và lịch sử chuyển trạng thái", "responses": { "200": { "description": "Campaign escrow" }, "404": { "description": "Not found" } } } },
+    "/analytics/campaigns/public": { "get": { "summary": "Thống kê chiến dịch công khai", "responses": { "200": { "description": "Public campaign analytics" } } } },
+    "/analytics/campaigns/organization": { "get": { "summary": "Thống kê chiến dịch của tổ chức", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Organization analytics" } } } },
+    "/analytics/campaigns/admin": { "get": { "summary": "Thống kê chiến dịch toàn hệ thống", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Admin analytics" } } } }
+  },
+  "components": { "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" } } }
+}

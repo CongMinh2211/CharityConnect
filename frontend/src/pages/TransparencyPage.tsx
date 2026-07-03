@@ -1,0 +1,56 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Activity, Blocks, CheckCircle2, ExternalLink, FileCheck2, Link2, Plus, ShieldCheck } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
+import { useAuth } from "../auth/AuthContext";
+import { api, formatVnd, getTrustChainHealth, verifyAnchorOnchain } from "../lib/api";
+import type { Campaign, LedgerAnchor, LedgerEntry, LedgerEventType, LedgerVerification } from "../types";
+
+export function TransparencyPage(): JSX.Element {
+  const { user } = useAuth(); const client = useQueryClient();
+  const [eventType, setEventType] = useState<"" | LedgerEventType>(""); const [campaignId, setCampaignId] = useState("");
+  const verification = useQuery({ queryKey: ["ledger-verification"], queryFn: () => api<LedgerVerification>("/transparency/verify") });
+  const campaigns = useQuery({ queryKey: ["transparency-campaigns"], queryFn: () => api<Campaign[]>("/campaigns") });
+  const ledger = useQuery({ queryKey: ["public-ledger", campaignId, eventType], queryFn: () => api<{ items: LedgerEntry[] }>(`/transparency/ledger?limit=50${campaignId ? `&campaign_id=${campaignId}` : ""}${eventType ? `&event_type=${eventType}` : ""}`) });
+  const anchors = useQuery({ queryKey: ["public-anchors"], queryFn: () => api<{ items: LedgerAnchor[] }>("/transparency/anchors?limit=20") });
+  const health = useQuery({ queryKey: ["trustchain-health"], queryFn: getTrustChainHealth, enabled: user?.role === "ADMIN" });
+  const anchorAction = useMutation({ mutationFn: () => api<LedgerAnchor>("/admin/transparency/anchors", { method: "POST" }), onSuccess: async () => { await client.invalidateQueries({ queryKey: ["public-anchors"] }); await client.invalidateQueries({ queryKey: ["public-receipt-proof"] }); } });
+  const summary = verification.data;
+  return <div className="container-page py-10 lg:py-14">
+    <div className="max-w-3xl"><p className="eyebrow">Sổ cái công khai</p><h1 className="mt-5 text-4xl font-black tracking-[-0.04em] text-ink sm:text-5xl">Một hành trình có thể kiểm chứng</h1><p className="mt-5 text-lg leading-8 text-slate-600">Hash-chain bảo vệ thứ tự dữ liệu; Merkle Proof gom nhiều bản ghi thành một điểm neo. Đây là cơ chế chống sửa dữ liệu, không phải tiền số hay ví crypto.</p></div>
+    <div className="mt-8 grid gap-4 md:grid-cols-3"><Metric icon={<ShieldCheck />} label="Toàn vẹn chuỗi" value={summary?.valid ? "100% hợp lệ" : "Đang kiểm tra"} /><Metric icon={<Link2 />} label="Tổng quyên góp" value={formatVnd(summary?.donation_total ?? 0)} /><Metric icon={<FileCheck2 />} label="Quỹ đã dùng, được duyệt" value={formatVnd(summary?.fund_usage_total ?? 0)} /></div>
+    {user?.role === "ADMIN" && health.data && <section className="card mt-6 p-6"><div className="flex items-center gap-2"><Activity size={18} className="text-brand-700" /><h2 className="text-lg font-black">Sức khỏe TrustChain</h2></div><div className="mt-4 grid gap-4 sm:grid-cols-4"><HealthStat label="Tổng anchor" value={String(health.data.total_anchors)} /><HealthStat label="Đã neo on-chain" value={String(health.data.onchain_anchors)} /><HealthStat label="Neo nội bộ" value={String(health.data.simulated_anchors)} /><HealthStat label="Entry chưa neo" value={String(health.data.unanchored_entries)} warn={health.data.unanchored_entries > 0} /></div><p className={`mt-4 text-sm font-semibold ${health.data.issues.length ? "text-amber-800" : "text-brand-800"}`}>{health.data.recommendation}</p></section>}
+    <section className="card mt-8 overflow-hidden"><div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 p-6"><div><p className="eyebrow w-fit !py-1">Merkle anchor</p><h2 className="mt-3 text-xl font-black">Điểm neo TrustChain</h2><p className="mt-1 text-sm text-slate-500">Tối đa 100 bản ghi liên tục trong mỗi điểm neo.</p></div>{user?.role === "ADMIN" && <button className="btn-primary" disabled={anchorAction.isPending} onClick={() => anchorAction.mutate()}><Plus size={17} />{anchorAction.isPending ? "Đang tạo…" : "Tạo điểm neo"}</button>}</div>
+      {anchorAction.isError && <p className="mx-6 mt-5 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">{anchorAction.error.message}</p>}
+      <div className="grid gap-4 p-6 lg:grid-cols-2">{anchors.data?.items.map((anchor) => <article className="rounded-2xl border border-slate-200 p-5" key={anchor.id ?? anchor.anchor_id}><div className="flex items-start justify-between gap-3"><div><p className="font-black">Ledger #{anchor.from_position}–#{anchor.to_position}</p><p className="mt-1 text-xs text-slate-500">{anchor.network}</p></div><span className={`rounded-full px-3 py-1 text-xs font-black ${anchor.status === "FAILED" ? "bg-rose-100 text-rose-800" : anchor.status === "PENDING" ? "bg-amber-100 text-amber-800" : "bg-brand-100 text-brand-900"}`}>{anchor.status}</span></div><p className="mt-4 break-all font-mono text-[11px] text-slate-500">ROOT {anchor.merkle_root}</p><p className="mt-2 break-all font-mono text-[11px] text-slate-400">TX {anchor.anchor_tx_hash}</p>{anchor.explorer_url && <a className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-brand-800" href={anchor.explorer_url} target="_blank" rel="noreferrer">Mở explorer <ExternalLink size={14} /></a>}<AnchorVerify anchorId={String(anchor.id ?? anchor.anchor_id)} network={anchor.network} /></article>)}{anchors.data?.items.length === 0 && <p className="text-sm text-slate-500">Chưa có điểm neo. Quản trị viên có thể tạo anchor đầu tiên.</p>}</div>
+    </section>
+    <section className="card mt-8 overflow-hidden"><div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 p-6"><div><h2 className="text-xl font-black">Nhật ký hash-chain</h2><p className="mt-1 text-sm text-slate-500">{summary?.entries ?? 0} bản ghi · head <span className="font-mono">{summary?.head_hash?.slice(0, 12)}…</span></p></div><div className="flex flex-wrap gap-2"><select aria-label="Lọc theo chiến dịch" className="input !min-h-10 !w-auto" value={campaignId} onChange={(event) => setCampaignId(event.target.value)}><option value="">Tất cả chiến dịch</option>{campaigns.data?.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select><select aria-label="Lọc theo sự kiện" className="input !min-h-10 !w-auto" value={eventType} onChange={(event) => setEventType(event.target.value as typeof eventType)}><option value="">Tất cả sự kiện</option><option value="DONATION_COMPLETED">Quyên góp</option><option value="FUND_USAGE_VERIFIED">Sử dụng quỹ</option></select><Link className="btn-secondary !min-h-10 !px-4" to="/xac-minh-bien-nhan">Xác minh biên nhận</Link></div></div>
+      <div className="divide-y divide-slate-200">{ledger.data?.items.map((item) => <article className="grid gap-3 p-6 md:grid-cols-[80px_1fr_auto] md:items-center" key={item.entry_hash}><div><p className="text-xs font-bold uppercase text-slate-400">Vị trí</p><p className="mt-1 text-xl font-black">#{item.position}</p></div><div><p className="flex items-center gap-2 font-bold"><CheckCircle2 size={17} className="text-brand-700" />{item.event_type === "DONATION_COMPLETED" ? "Quyên góp hoàn tất" : "Báo cáo sử dụng quỹ đã duyệt"}</p><p className="mt-1 text-sm text-slate-600">{String(item.public_payload.campaign_title ?? "Chiến dịch")} · {formatVnd(Number(item.public_payload.amount ?? item.public_payload.amount_used ?? 0))}</p><p className="mt-2 break-all font-mono text-[11px] text-slate-400">{item.entry_hash}</p></div><Link className="inline-flex items-center gap-2 text-sm font-bold text-brand-800" to={`/xac-minh-bien-nhan${item.public_payload.receipt_number ? `?receipt=${encodeURIComponent(String(item.public_payload.receipt_number))}` : ""}`}><Blocks size={16} />Proof</Link></article>)}</div>
+    </section>
+  </div>;
+}
+
+function AnchorVerify({ anchorId, network }: { anchorId: string; network: string }): JSX.Element {
+  const verify = useMutation({ mutationFn: () => verifyAnchorOnchain(anchorId) });
+  const result = verify.data?.onchain;
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-3">
+      <button className="btn-secondary !min-h-9 !px-3 !text-xs" disabled={verify.isPending} onClick={() => verify.mutate()}>
+        <ShieldCheck size={14} />{verify.isPending ? "Đang kiểm tra…" : "Xác minh on-chain"}
+      </button>
+      {verify.isError && <p className="mt-2 text-xs font-semibold text-amber-800">Chưa kiểm tra được lúc này.</p>}
+      {result && (
+        <p className={`mt-2 text-xs font-bold ${result.onchain_verified ? "text-brand-800" : "text-slate-500"}`}>
+          {result.onchain_verified
+            ? `Đã khớp Merkle root trên chain · ${result.confirmations} xác nhận`
+            : result.reason === "NOT_ON_CHAIN"
+              ? `Điểm neo nội bộ (${network}) — chưa công bố lên blockchain.`
+              : `Chưa khớp trên chain (${result.reason ?? "không rõ"}).`}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function HealthStat({ label, value, warn }: { label: string; value: string; warn?: boolean }): JSX.Element { return <div className={`rounded-2xl border p-4 ${warn ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-slate-50"}`}><p className="text-xs font-bold uppercase text-slate-500">{label}</p><p className={`mt-1 text-2xl font-black ${warn ? "text-amber-800" : "text-ink"}`}>{value}</p></div>; }
+function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: string }): JSX.Element { return <div className="card p-5"><span className="text-brand-700">{icon}</span><p className="mt-4 text-sm text-slate-500">{label}</p><p className="mt-1 text-2xl font-black">{value}</p></div>; }

@@ -1,0 +1,21 @@
+.env
+node_modules/
+dist/
+coverage/
+coverage.xml
+*.tsbuildinfo
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+uploads/
+*.log
+.venv/
+.tools/
+
+# Thư mục cũ đã chuyển sang frontend/ + backend/ — xóa tay bằng Explorer
+web/
+services/
+tmp/
+logs/
+artifacts/

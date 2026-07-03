@@ -1,0 +1,16 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "CharityConnect Identity Service", "version": "1.0.0" },
+  "paths": {
+    "/auth/register": { "post": { "summary": "Đăng ký và xếp email chào mừng vào outbox", "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "required": ["email", "password", "name", "role", "terms_accepted"], "properties": { "email": { "type": "string", "format": "email" }, "password": { "type": "string" }, "name": { "type": "string" }, "role": { "enum": ["DONOR", "ORGANIZATION"] }, "terms_accepted": { "const": true } } } } } }, "responses": { "201": { "description": "Created; email_notification=QUEUED" }, "400": { "description": "Invalid input" } } } },
+    "/auth/login": { "post": { "summary": "Đăng nhập và nhận JWT", "responses": { "200": { "description": "Authenticated" }, "401": { "description": "Invalid credentials" } } } },
+    "/profile": { "get": { "summary": "Xem hồ sơ", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Profile" } } }, "put": { "summary": "Cập nhật hồ sơ", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Updated" } } } },
+    "/organizations/application": { "post": { "summary": "Nộp hồ sơ xác minh tổ chức", "security": [{ "bearerAuth": [] }], "responses": { "201": { "description": "Submitted" } } } },
+    "/organizations/me": { "get": { "summary": "Xem trạng thái tổ chức", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Organization profile" } } } },
+    "/admin/organizations": { "get": { "summary": "Hàng đợi xác minh", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Queue" } } } },
+    "/admin/organizations/{id}/status": { "patch": { "summary": "Duyệt hoặc từ chối tổ chức", "security": [{ "bearerAuth": [] }], "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Reviewed" } } } },
+    "/analytics/users/public": { "get": { "summary": "Thống kê công khai số donor và tổ chức đã xác minh", "responses": { "200": { "description": "Public user analytics" } } } },
+    "/analytics/users/admin": { "get": { "summary": "Phân bố vai trò và trạng thái tổ chức", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Admin user analytics" } } } }
+  },
+  "components": { "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" } } }
+}

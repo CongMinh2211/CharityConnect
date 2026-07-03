@@ -1,0 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tông xanh lá nguyên bản + các cải tiến UI: nút pill, bo tròn mềm,
+   gradient nhẹ, tile thống kê — thân thiện và dễ dùng. */
+
+@layer base {
+  html { scroll-behavior: smooth; font-family: Manrope, Inter, ui-sans-serif, system-ui, sans-serif; color: #10231d; background: #f6f8f3; }
+  body { margin: 0; min-width: 320px; min-height: 100vh; overflow-x: hidden; background: #f6f8f3; }
+  h1, h2, h3 { text-wrap: balance; }
+  a { text-decoration: none; }
+  :focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }
+  ::selection { background: #a7e86b; color: #10231d; }
+}
+
+@layer components {
+  .container-page { @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8; }
+  .hero-surface { background-color: #e9eee4; background-image: radial-gradient(circle at 12% 18%, rgba(167,232,107,.3), transparent 28%), radial-gradient(circle at 88% 82%, rgba(46,113,72,.1), transparent 24%); }
+  .card { @apply rounded-3xl border border-ink/10 bg-white shadow-card; }
+  .campaign-card { @apply flex h-full flex-col overflow-hidden rounded-3xl border border-ink/10 bg-white transition duration-300 hover:-translate-y-1 hover:border-brand-200 hover:shadow-card; }
+  .btn-primary { @apply inline-flex min-h-12 items-center justify-center gap-2 rounded-full px-6 py-2.5 font-extrabold text-ink transition hover:opacity-90 active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-50; background-image: linear-gradient(135deg, #c9ecab 0%, #a7e86b 55%, #8ed94e 100%); box-shadow: 0 10px 24px rgba(108, 191, 61, .28); }
+  .btn-secondary { @apply inline-flex min-h-12 items-center justify-center gap-2 rounded-full border border-ink/20 bg-white px-6 py-2.5 font-bold text-ink transition hover:bg-sage-100; }
+  .input { @apply min-h-12 w-full rounded-2xl border border-ink/20 bg-white px-4 py-2.5 text-ink shadow-none placeholder:text-slate-400 focus:border-brand-700 focus:ring-2 focus:ring-brand-100; }
+  .label { @apply mb-2 block text-sm font-bold text-ink; }
+  .eyebrow { @apply inline-flex items-center gap-2 rounded-full bg-white/70 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[.13em] text-brand-700; }
+  .nav-link { @apply hidden rounded-full px-4 py-2.5 font-semibold text-slate-600 transition hover:bg-sage-100 hover:text-ink sm:block; }
+  .nav-link-active { @apply bg-sage-100 text-ink; }
+  .filter-pill { @apply shrink-0 rounded-full border border-ink/15 bg-white px-4 py-2 text-xs font-extrabold text-slate-600 transition hover:border-ink/40; }
+  .filter-pill-active { @apply border-ink bg-ink text-white; }
+  .skeleton { @apply animate-pulse rounded-3xl bg-sage-200; }
+  .stat-tile { @apply rounded-3xl border border-ink/10 bg-white/80 p-5 text-center shadow-card backdrop-blur; }
+  .progress-track { @apply h-2.5 w-full overflow-hidden rounded-full bg-sage-200; }
+  .progress-fill { @apply h-full rounded-full transition-all duration-500; background-image: linear-gradient(90deg, #c9ecab, #6cbf3d); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+/* Reveal-on-scroll + gentle image zoom for the charity gallery */
+@keyframes cc-fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-up { animation: cc-fade-up 0.55s cubic-bezier(0.22, 0.61, 0.36, 1) both; }
+.gallery-tile img { transition: transform 0.6s cubic-bezier(0.22, 0.61, 0.36, 1); }
+.gallery-tile:hover img { transform: scale(1.07); }

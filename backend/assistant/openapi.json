@@ -1,0 +1,518 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CharityConnect Assistant API",
+    "description": "Internal-first Vietnamese assistant with cited web fallback.",
+    "version": "3.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/capabilities": {
+      "get": {
+        "summary": "Capabilities",
+        "operationId": "capabilities_assistant_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Capabilities Assistant Capabilities Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/role-guide": {
+      "get": {
+        "summary": "Assistant Role Guide",
+        "operationId": "assistant_role_guide_assistant_role_guide_get",
+        "parameters": [
+          {
+            "name": "role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "PUBLIC",
+                "DONOR",
+                "ORGANIZATION",
+                "ADMIN"
+              ],
+              "type": "string",
+              "default": "PUBLIC",
+              "title": "Role"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "/",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleGuideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/assistant/chat": {
+      "post": {
+        "summary": "Chat",
+        "operationId": "chat_assistant_chat_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AssistantAction": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "path"
+        ],
+        "title": "AssistantAction"
+      },
+      "AssistantSource": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "INTERNAL",
+              "WEB"
+            ],
+            "title": "Kind"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "title"
+        ],
+        "title": "AssistantSource"
+      },
+      "ChatRequest": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTurn"
+            },
+            "type": "array",
+            "maxItems": 6,
+            "title": "History"
+          },
+          "page": {
+            "$ref": "#/components/schemas/PageContext"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "ChatRequest"
+      },
+      "ChatResponse": {
+        "properties": {
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "DEMO",
+              "OPENAI"
+            ],
+            "title": "Mode"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "INTERNAL",
+              "EXTERNAL_WEB"
+            ],
+            "title": "Scope"
+          },
+          "searched_web": {
+            "type": "boolean",
+            "title": "Searched Web"
+          },
+          "knowledge_version": {
+            "type": "string",
+            "title": "Knowledge Version",
+            "default": "charityconnect-2026.06"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantSource"
+            },
+            "type": "array",
+            "title": "Sources"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantAction"
+            },
+            "type": "array",
+            "title": "Actions"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Suggestions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "answer",
+          "mode",
+          "scope",
+          "searched_web",
+          "sources",
+          "actions",
+          "suggestions"
+        ],
+        "title": "ChatResponse"
+      },
+      "ChatTurn": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatTurn"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PageContext": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "maxLength": 160,
+            "title": "Path",
+            "default": "/"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "DONOR",
+                  "ORGANIZATION",
+                  "ADMIN"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "type": "object",
+        "title": "PageContext"
+      },
+      "RoleGuideAction": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "roles": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "PUBLIC",
+                "DONOR",
+                "ORGANIZATION",
+                "ADMIN"
+              ]
+            },
+            "type": "array",
+            "title": "Roles"
+          },
+          "requires_login": {
+            "type": "boolean",
+            "title": "Requires Login"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "path",
+          "description",
+          "roles",
+          "requires_login"
+        ],
+        "title": "RoleGuideAction"
+      },
+      "RoleGuideResponse": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "PUBLIC",
+              "DONOR",
+              "ORGANIZATION",
+              "ADMIN"
+            ],
+            "title": "Role"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/RoleGuideSection"
+            },
+            "type": "array",
+            "title": "Sections"
+          },
+          "locked_actions": {
+            "items": {
+              "$ref": "#/components/schemas/RoleGuideAction"
+            },
+            "type": "array",
+            "title": "Locked Actions"
+          },
+          "tips": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tips"
+          },
+          "knowledge_version": {
+            "type": "string",
+            "title": "Knowledge Version",
+            "default": "charityconnect-2026.06"
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "path",
+          "sections",
+          "locked_actions",
+          "tips"
+        ],
+        "title": "RoleGuideResponse"
+      },
+      "RoleGuideSection": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "actions": {
+            "items": {
+              "$ref": "#/components/schemas/RoleGuideAction"
+            },
+            "type": "array",
+            "title": "Actions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "description",
+          "actions"
+        ],
+        "title": "RoleGuideSection"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

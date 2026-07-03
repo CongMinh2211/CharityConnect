@@ -10,11 +10,11 @@ interface ChatMessage {
   content: string;
   sources?: AssistantSource[];
   actions?: Array<{ label: string; path: string }>;
-  mode?: "DEMO" | "OPENAI";
+  mode?: "DEMO" | "OPENAI" | "ANTHROPIC";
   scope?: "INTERNAL" | "EXTERNAL_WEB";
 }
 
-const welcome: ChatMessage = { role: "assistant", content: "Chào bạn! Mình ưu tiên dữ liệu CharityConnect. Nếu câu hỏi nằm ngoài website, mình có thể tìm nguồn công khai khi OpenAI API được cấu hình." };
+const welcome: ChatMessage = { role: "assistant", content: "Chào bạn! Mình ưu tiên dữ liệu CharityConnect. Nếu câu hỏi nằm ngoài website, mình có thể tìm nguồn công khai khi AI search được cấu hình." };
 const initialSuggestions = ["Cách đăng nhập?", "Cách xác minh biên nhận?", "Thống kê toàn dân ở đâu?"];
 
 export function AssistantWidget(): JSX.Element {
@@ -32,7 +32,7 @@ export function AssistantWidget(): JSX.Element {
   const [messages, setMessages] = useState<ChatMessage[]>([welcome]);
   const [suggestions, setSuggestions] = useState(initialSuggestions);
   const [loading, setLoading] = useState(false);
-  const [activeMode, setActiveMode] = useState<"DEMO" | "OPENAI">("DEMO");
+  const [activeMode, setActiveMode] = useState<"DEMO" | "OPENAI" | "ANTHROPIC">("DEMO");
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function send(message: string): Promise<void> {

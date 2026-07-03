@@ -239,7 +239,8 @@
             "type": "string",
             "enum": [
               "DEMO",
-              "OPENAI"
+              "OPENAI",
+              "ANTHROPIC"
             ],
             "title": "Mode"
           },

@@ -5,12 +5,12 @@ from dataclasses import dataclass
 KNOWLEDGE_VERSION = "charityconnect-2026.06"
 
 KNOWLEDGE_BASE = """
-CharityConnect là website đồ án tiếng Việt kết nối người quyên góp, tổ chức từ thiện
-và quản trị viên. Hệ thống chỉ mô phỏng thanh toán bằng VND, không trừ tiền thật,
+CharityConnect là website tiếng Việt kết nối người quyên góp, tổ chức từ thiện
+và quản trị viên. Hệ thống ghi nhận đóng góp bằng VND, phát hành biên nhận,
 không có ví, token, NFT, gas, tiền số, chat cộng đồng hay quyên góp định kỳ.
 
 Luồng người quyên góp: đăng nhập, xem chiến dịch đã duyệt còn hạn, chọn số tiền,
-có thể chọn ẩn danh với tổ chức, xác nhận mô phỏng, nhận biên nhận có mã CC-...,
+có thể chọn ẩn danh với tổ chức, xác nhận đóng góp, nhận biên nhận có mã CC-...,
 QR, ledger hash và vị trí chuỗi; sau đó xem lịch sử hoặc xác minh công khai.
 
 Luồng tổ chức: nộp hồ sơ pháp lý; chỉ tổ chức VERIFIED được nộp chiến dịch; tạo bản
@@ -27,9 +27,9 @@ FUND_USAGE_VERIFIED bằng SHA-256 trên canonical JSON và previous_hash; bản
 dùng 64 số 0. event_id duy nhất chống cộng trùng. Đây là hash-chain chống sửa dữ
 liệu, không phải blockchain phi tập trung. Payload công khai không chứa tên, email
 hay donor ID. TrustChain gom tối đa 100 ledger hash liên tục thành Merkle root; admin
-chủ động tạo anchor mô phỏng hoặc Sepolia. Biên nhận chỉ CONFIRMED khi hash-chain,
-Merkle Proof và anchor đều hợp lệ. Escrow là state machine mô phỏng quỹ khóa/giải
-ngân, không giữ tiền thật. Trang /minh-bach kiểm tra chuỗi, proof và các điểm neo.
+chủ động tạo anchor nội bộ hoặc Sepolia. Biên nhận chỉ CONFIRMED khi hash-chain,
+Merkle Proof và anchor đều hợp lệ. Escrow là state machine theo dõi quỹ khóa/giải
+ngân. Trang /minh-bach kiểm tra chuỗi, proof và các điểm neo.
 
 Thống kê: /thong-ke tổng hợp tiền và lượt quyên góp, người đóng góp, quỹ đã dùng,
 số dư minh bạch, tiến độ và danh mục. Donation Service là nguồn chuẩn về tiền.
@@ -39,9 +39,10 @@ Trạng thái: OrganizationStatus PENDING/VERIFIED/REJECTED; CampaignStatus
 DRAFT/PENDING_REVIEW/APPROVED/REJECTED/CLOSED; ImpactReportStatus
 PENDING_REVIEW/VERIFIED/REJECTED; LedgerProofStatus CONFIRMED/PENDING/INVALID.
 
-Tài khoản demo dùng mật khẩu Demo@123: donor@demo.vn, org@demo.vn và admin@demo.vn.
+Tài khoản mẫu có thể chọn nhanh trên trang đăng nhập theo ba vai trò: người quyên góp,
+tổ chức và quản trị viên.
 Chiến dịch mẫu gồm phòng học vùng cao, bữa ăn cho bệnh nhi, nước sạch Nậm Lành và
-tủ thuốc cho điểm trường. Số tiền có thể thay đổi khi người dùng chạy demo.
+tủ thuốc cho điểm trường. Số tiền có thể thay đổi theo dữ liệu hệ thống.
 """.strip()
 
 
@@ -58,7 +59,7 @@ IN_SCOPE_TERMS = (
     "charityconnect", "quyên góp", "ủng hộ", "chiến dịch", "tổ chức", "quản trị",
     "admin", "đăng nhập", "đăng ký", "tài khoản", "biên nhận", "receipt", "qr",
     "minh bạch", "hash", "blockchain", "sổ cái", "ledger", "báo cáo", "bằng chứng",
-    "kiểm duyệt", "xác minh", "ẩn danh", "vnd", "demo", "trang này", "chức năng",
+    "kiểm duyệt", "xác minh", "ẩn danh", "vnd", "trang này", "chức năng",
     "merkle", "trustchain", "anchor", "điểm neo", "escrow", "quỹ khóa", "giải ngân",
     "thống kê", "biểu đồ", "analytics", "gmail", "email", "thư cảm ơn", "lịch sử",
     "từ thiện", "hướng dẫn", "cách dùng", "vai trò",
@@ -146,7 +147,7 @@ INTENTS: tuple[Intent, ...] = (
         "account",
         ("đăng nhập", "tài khoản", "đăng ký", "mật khẩu", "quên mật khẩu", "vai trò", "phân quyền"),
         Grounding(
-            ["Tài khoản và phân quyền demo"],
+            ["Tài khoản và phân quyền"],
             [{"label": "Đăng nhập", "path": "/dang-nhap"}],
             ["Tài khoản donor là gì?", "Tổ chức làm được gì?", "Admin làm được gì?"],
         ),
@@ -155,7 +156,7 @@ INTENTS: tuple[Intent, ...] = (
         "donation",
         ("quyên góp", "ủng hộ", "chiến dịch", "gây quỹ", "đóng góp", "ẩn danh", "từ thiện"),
         Grounding(
-            ["Quy trình quyên góp mô phỏng", "Danh sách chiến dịch đã duyệt"],
+            ["Quy trình quyên góp", "Danh sách chiến dịch đã duyệt"],
             [{"label": "Chọn chiến dịch", "path": "/"}],
             ["Quyên góp có mất tiền thật không?", "Có thể ẩn danh không?", "Sau quyên góp nhận gì?"],
         ),

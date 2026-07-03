@@ -538,7 +538,7 @@ async def annual_statement(year: int, request: Request, user: UserClaims = Depen
         trustchain_table,
         Spacer(1, 6 * mm),
         Paragraph(f"<i>Tra cứu và xác minh biên nhận tại: {web_url}/xac-minh-bien-nhan</i>", right_align_style),
-        Paragraph("<i>Báo cáo mô phỏng học thuật · Không xử lý giao dịch tài chính thật.</i>", right_align_style)
+        Paragraph("<i>Báo cáo đóng góp CharityConnect · Dữ liệu được ghi nhận trên hệ thống minh bạch.</i>", right_align_style)
     ]
     document.build(story)
     return Response(output.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="charityconnect-{year}.pdf"'})

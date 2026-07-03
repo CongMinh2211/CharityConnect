@@ -129,7 +129,7 @@ export async function getAssistantRoleGuide(role: Role | "PUBLIC", path = "/"): 
       path,
       sections,
       locked_actions,
-      tips: ["Đây là role guide fallback trong frontend mock mode."],
+      tips: ["Đây là hướng dẫn cục bộ khi trợ lý Python chưa sẵn sàng."],
       knowledge_version: "frontend-role-guide"
     };
   }

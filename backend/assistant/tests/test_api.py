@@ -10,8 +10,11 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def clear_rate_limits():
+def clear_rate_limits(monkeypatch):
     main.rate_buckets.clear()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ASSISTANT_PROVIDER", raising=False)
 
 
 def test_health_and_capabilities_without_key(monkeypatch):
@@ -115,8 +118,8 @@ def test_rejects_invalid_payload_limits():
 @pytest.mark.parametrize(
     ("question", "expected"),
     [
-        ("tài khoản đăng nhập", "Demo@123"),
-        ("quyên góp", "mô phỏng"),
+        ("tài khoản đăng nhập", "chọn nhanh"),
+        ("quyên góp", "ghi nhận"),
         ("QR biên nhận", "QR"),
         ("Merkle minh bạch", "SHA-256"),
         ("thống kê biểu đồ", "Thống kê"),
@@ -178,6 +181,20 @@ def test_chat_uses_internal_provider_when_key_exists(monkeypatch):
     payload = client.post("/assistant/chat", json={"message": "Xin hướng dẫn quyên góp"}).json()
     assert payload["mode"] == "OPENAI"
     assert payload["scope"] == "INTERNAL"
+
+
+def test_chat_uses_anthropic_internal_provider_when_key_exists(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-only")
+    monkeypatch.setattr(main, "load_internal_context", lambda _path: main.asyncio.sleep(0, result="facts"))
+
+    async def fake_anthropic_answer(*_args):
+        return "Câu trả lời từ Claude"
+
+    monkeypatch.setattr(main, "anthropic_answer", fake_anthropic_answer)
+    payload = client.post("/assistant/chat", json={"message": "Xin hướng dẫn quyên góp"}).json()
+    assert payload["mode"] == "ANTHROPIC"
+    assert payload["scope"] == "INTERNAL"
+    assert "Claude" in payload["answer"]
 
 
 def test_chat_returns_cited_external_provider_result(monkeypatch):

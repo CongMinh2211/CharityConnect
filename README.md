@@ -14,8 +14,9 @@ Tài khoản demo dùng chung mật khẩu `Demo@123`:
 
 Chạy `RUN_TESTS.bat` để kiểm thử service, mock API và production build.
 
-Trợ lý mặc định trả lời offline. Để bật OpenAI API, chạy `SET_OPENAI_KEY.bat`;
-script nhập key ở chế độ ẩn và lưu `OPENAI_API_KEY` vào `.env` đã bị Git bỏ qua.
+Trợ lý mặc định trả lời offline. Để bật AI API, chạy `SET_OPENAI_KEY.bat`
+hoặc `SET_ANTHROPIC_KEY.bat`; script nhập key ở chế độ ẩn và lưu vào `.env`
+đã bị Git bỏ qua.
 Bot ưu tiên knowledge base và API nội bộ CharityConnect. Chỉ câu hỏi ngoài phạm vi mới dùng
 `web_search`, luôn trả URL nguồn; bot giữ tối đa 6 lượt và che email, số điện thoại, API key.
 
@@ -23,7 +24,7 @@ Bot ưu tiên knowledge base và API nội bộ CharityConnect. Chỉ câu hỏi
 
 Demo local chạy đầy đủ mà không cần secret. Khi cần bật dịch vụ thật, điền các biến trong `.env` theo `.env.example`:
 
-- OpenAI: `OPENAI_API_KEY`. Câu hỏi CharityConnect vẫn không gọi web search.
+- AI Assistant: `ANTHROPIC_API_KEY` hoặc `OPENAI_API_KEY`. Câu hỏi CharityConnect vẫn ưu tiên dữ liệu nội bộ; câu hỏi ngoài phạm vi cần `OPENAI_API_KEY` để dùng web search có trích dẫn URL.
 - Gmail: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_SENDER_EMAIL`, rồi chạy `cd backend/identity && npm run gmail:authorize`. Refresh token được ghi thẳng vào `.env`, không in ra terminal.
 - Sepolia: `ANCHOR_RPC_URL` và `ANCHOR_PRIVATE_KEY`. Nếu để trống, nút “Tạo điểm neo” dùng `LOCAL_SIMULATION` và không tốn gas.
 

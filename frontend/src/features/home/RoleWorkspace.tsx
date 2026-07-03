@@ -78,9 +78,9 @@ export function RoleWorkspace({ user }: RoleWorkspaceProps): JSX.Element {
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-3">
-              <LoginRoleCard icon={Heart} title="Người quyên góp" email="donor@demo.vn" text="Lưu, theo dõi, thông báo, lịch sử và PDF." />
-              <LoginRoleCard icon={WalletCards} title="Tổ chức" email="org@demo.vn" text="Chiến dịch, ngân sách, mốc và báo cáo quỹ." />
-              <LoginRoleCard icon={ShieldCheck} title="Admin" email="admin@demo.vn" text="Kiểm duyệt, Risk Score, Audit Log, TrustChain." />
+              <PublicFeatureCard icon={Heart} title="Chiến dịch" badge="Công khai" text="Xem danh sách, lọc danh mục và mở chi tiết gây quỹ." to="/" />
+              <PublicFeatureCard icon={Landmark} title="Minh bạch" badge="TrustChain" text="Đối chiếu sổ cái, Merkle proof và điểm neo công khai." to="/minh-bach" />
+              <PublicFeatureCard icon={ReceiptText} title="Biên nhận" badge="Xác minh" text="Nhập mã CC-... hoặc quét QR để kiểm tra biên nhận." to="/xac-minh-bien-nhan" />
             </div>
           </div>
         </div>
@@ -170,14 +170,14 @@ export function RoleWorkspace({ user }: RoleWorkspaceProps): JSX.Element {
   );
 }
 
-function LoginRoleCard({ icon: Icon, title, email, text }: { icon: typeof Heart; title: string; email: string; text: string }): JSX.Element {
+function PublicFeatureCard({ icon: Icon, title, badge, text, to }: { icon: typeof Heart; title: string; badge: string; text: string; to: string }): JSX.Element {
   return (
-    <Link to="/dang-nhap" className="group rounded-2xl border border-ink/10 bg-white p-4 transition hover:-translate-y-0.5 hover:border-brand-500 hover:shadow-card">
+    <Link to={to} className="group rounded-2xl border border-ink/10 bg-white p-4 transition hover:-translate-y-0.5 hover:border-brand-500 hover:shadow-card">
       <span className="grid h-10 w-10 place-items-center rounded-xl bg-brand-50 text-brand-700"><Icon size={19} /></span>
       <p className="mt-3 font-black">{title}</p>
-      <p className="mt-1 font-mono text-xs text-brand-700">{email}</p>
+      <p className="mt-1 text-xs font-black uppercase tracking-[.12em] text-brand-700">{badge}</p>
       <p className="mt-2 text-sm leading-6 text-slate-600">{text}</p>
-      <p className="mt-3 inline-flex items-center gap-1 text-sm font-black text-ink">Đăng nhập <ArrowRight size={15} className="transition group-hover:translate-x-0.5" /></p>
+      <p className="mt-3 inline-flex items-center gap-1 text-sm font-black text-ink">Mở chức năng <ArrowRight size={15} className="transition group-hover:translate-x-0.5" /></p>
     </Link>
   );
 }

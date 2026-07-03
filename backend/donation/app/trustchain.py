@@ -6,10 +6,34 @@ from typing import Any
 from uuid import UUID
 
 import httpx
-from eth_account import Account
 
 from .config import ANCHOR_CHAIN_ID, ANCHOR_EXPLORER_URL, ANCHOR_PRIVATE_KEY, ANCHOR_RPC_URL
 from .domain import merkle_proof, merkle_root, verify_merkle_proof
+
+
+class _LazyAccount:
+    """Load eth-account only when a real Sepolia anchor is requested.
+
+    Some Windows machines block native dependencies used by eth-account during
+    import. Local TrustChain checks and simulated anchors do not need it, so the
+    import is deferred until the Sepolia path is actually used. Tests can still
+    monkeypatch Account.from_key/sign_transaction on this object.
+    """
+
+    @staticmethod
+    def from_key(*args: Any, **kwargs: Any) -> Any:
+        from eth_account import Account as EthAccount
+
+        return EthAccount.from_key(*args, **kwargs)
+
+    @staticmethod
+    def sign_transaction(*args: Any, **kwargs: Any) -> Any:
+        from eth_account import Account as EthAccount
+
+        return EthAccount.sign_transaction(*args, **kwargs)
+
+
+Account = _LazyAccount
 
 
 def anchor_mode() -> str:

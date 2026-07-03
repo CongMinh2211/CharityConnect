@@ -529,7 +529,7 @@ function mockRoleGuide(role: RoleGuideRole, path: string) {
 }
 
 function diagnosticRecommendation(issues: string[]): string {
-  if (!issues.length) return "Dữ liệu minh bạch đang hợp lệ. Có thể dùng proof này để đối chiếu demo.";
+  if (!issues.length) return "Dữ liệu minh bạch đang hợp lệ. Có thể dùng proof này để đối chiếu công khai.";
   if (issues.some((issue) => issue.includes("Hash-chain"))) return "Dừng xác nhận công khai và kiểm tra lại ledger gốc.";
   if (issues.some((issue) => issue.includes("chưa neo"))) return "Tạo TrustChain anchor trong màn hình quản trị để hoàn tất xác minh.";
   return "Kiểm tra lại dữ liệu nguồn hoặc thử tạo proof mới.";
@@ -587,9 +587,9 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const message = String(body.message ?? "").toLocaleLowerCase("vi");
     let answer = "Mình có thể hướng dẫn quyên góp, xác minh biên nhận, xem sổ cái minh bạch hoặc sử dụng dashboard theo từng vai trò.";
     if (message.includes("đăng nhập") || message.includes("tài khoản")) {
-      answer = "Bạn mở Đăng nhập và dùng một trong ba tài khoản demo: donor@demo.vn, org@demo.vn hoặc admin@demo.vn. Mật khẩu chung là Demo@123.";
+      answer = "Bạn mở Đăng nhập, chọn nhanh một trong ba vai trò ở khung bên trái rồi hệ thống sẽ tự điền thông tin phù hợp.";
     } else if (message.includes("quyên góp") || message.includes("ủng hộ")) {
-      answer = "Đăng nhập vai trò người quyên góp, chọn một chiến dịch còn hạn, bấm Quyên góp, nhập số tiền và xác nhận. Đây là thanh toán mô phỏng, không trừ tiền thật.";
+      answer = "Đăng nhập vai trò người quyên góp, chọn một chiến dịch còn hạn, bấm Quyên góp, nhập số tiền và xác nhận. Hệ thống ghi nhận giao dịch, phát hành biên nhận và đưa vào sổ cái minh bạch.";
     } else if (message.includes("biên nhận") || message.includes("qr")) {
       answer = "Sau khi quyên góp thành công, mở biên nhận để xem QR và hash. Bạn cũng có thể vào Xác minh biên nhận, nhập mã CC-... để kiểm tra bằng chứng công khai.";
     } else if (message.includes("minh bạch") || message.includes("hash") || message.includes("blockchain")) {
@@ -607,7 +607,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       knowledge_version: "charityconnect-2026.06",
       sources: [{ kind: "INTERNAL", title: "Hướng dẫn sử dụng CharityConnect", path: "/" }],
       actions: [{ label: "Xem chiến dịch", path: "/" }],
-      suggestions: ["Cách đăng nhập demo?", "Cách xác minh biên nhận?", "Hash-chain hoạt động thế nào?"]
+      suggestions: ["Cách đăng nhập?", "Cách xác minh biên nhận?", "Hash-chain hoạt động thế nào?"]
     } as T;
   }
   if (pathname === "/assistant/role-guide" && method === "GET") {
@@ -1178,7 +1178,10 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       public_payload: { amount: donation.amount, campaign_id: campaign.id, campaign_title: campaign.title, completed_at: now, receipt_number: donation.receipt_number }
     });
     Object.assign(donation, { ledger_hash: proof.entry_hash, ledger_position: proof.position, proof_status: "CONFIRMED" });
-    state.donations.unshift(donation); state.emailNotifications.push({ event_id: donation.id, template: "DONATION_THANK_YOU", recipient_user_id: user.id, status: "SIMULATED" }); saveState(state); return donation as T;
+    state.donations.unshift(donation); state.emailNotifications.push({ event_id: donation.id, template: "DONATION_THANK_YOU", recipient_user_id: user.id, status: "SIMULATED" });
+    const formattedAmount = new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(donation.amount);
+    state.notifications.unshift({ id: createId("notice"), event_id: donation.id, user_id: user.id, type: "DONATION_RECEIVED", campaign_id: campaign.id, title: "Cảm ơn bạn đã quyên góp", message: `Bạn đã quyên góp ${formattedAmount} cho chiến dịch "${campaign.title}". Cảm ơn tấm lòng của bạn!`, path: `/bien-nhan/${donation.id}`, read_at: null, created_at: now });
+    saveState(state); return donation as T;
   }
   if (pathname === "/donations/history" && method === "GET") {
     const user = requireRole("DONOR");
@@ -1205,5 +1208,5 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     return state.donations.filter((item) => item.campaign_id === campaign.id).map((item) => ({ ...item, donor_name: item.anonymous ? "Ẩn danh" : item.donor_name })) as T;
   }
 
-  throw Object.assign(new Error(`Chưa mô phỏng API ${method} ${pathname}`), { status: 404 });
+  throw Object.assign(new Error(`Chưa hỗ trợ API ${method} ${pathname}`), { status: 404 });
 }

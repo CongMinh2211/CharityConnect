@@ -39,7 +39,7 @@ ACTIONS: tuple[GuideAction, ...] = (
     GuideAction("Xác minh biên nhận", "/xac-minh-bien-nhan", "Nhập mã CC-... để kiểm tra biên nhận công khai.", ("PUBLIC",)),
     # ---- Người quyên góp ----
     GuideAction("Tài khoản", "/tai-khoan", "Thông tin cá nhân, đổi mật khẩu, phiên đăng nhập và nhật ký cá nhân.", ("DONOR", "ORGANIZATION", "ADMIN"), True),
-    GuideAction("Lịch sử quyên góp", "/lich-su", "Danh sách giao dịch mô phỏng đã thực hiện.", ("DONOR",), True),
+    GuideAction("Lịch sử quyên góp", "/lich-su", "Danh sách giao dịch đã ghi nhận.", ("DONOR",), True),
     GuideAction("Yêu thích", "/yeu-thich", "Các chiến dịch bạn đã lưu để theo dõi.", ("DONOR",), True),
     GuideAction("Thông báo", "/thong-bao", "Cập nhật về chiến dịch và biên nhận của bạn.", ("DONOR",), True),
     # ---- Tổ chức ----
@@ -73,12 +73,12 @@ def _serialize_action(action: GuideAction) -> dict:
 
 
 COMMON_TIPS = [
-    "Mọi giao dịch chỉ là mô phỏng VND, không trừ tiền thật.",
+    "Mọi giao dịch được ghi nhận bằng VND và có biên nhận để kiểm chứng.",
     "Hash-chain/Merkle anchor là bằng chứng chống sửa dữ liệu, không phải tiền mã hóa.",
 ]
 
 ROLE_TIPS: dict[str, list[str]] = {
-    "PUBLIC": ["Đăng nhập bằng tài khoản demo (mật khẩu Demo@123) để mở khóa chức năng theo vai trò."],
+    "PUBLIC": ["Đăng nhập bằng cách chọn nhanh vai trò để dùng đúng nhóm chức năng."],
     "DONOR": ["Tài khoản donor có thể quyên góp, xem biên nhận, lịch sử và theo dõi chiến dịch."],
     "ORGANIZATION": ["Chỉ tổ chức đã xác minh (VERIFIED) mới được nộp chiến dịch và báo cáo."],
     "ADMIN": ["Admin kiểm duyệt nội dung, chấm Risk Score và vận hành TrustChain; mọi hành động vào Audit Log."],

@@ -119,7 +119,7 @@ export interface CampaignPreference {
   campaign_id: string; campaign_title?: string; saved: boolean; following: boolean; updated_at?: string;
 }
 export interface UserNotification {
-  id: string; event_id: string; type: "CAMPAIGN_APPROVED" | "MILESTONE_UPDATED" | "IMPACT_VERIFIED";
+  id: string; event_id: string; type: "CAMPAIGN_APPROVED" | "MILESTONE_UPDATED" | "IMPACT_VERIFIED" | "DONATION_RECEIVED";
   campaign_id: string; title: string; message: string; path: string; read_at?: string | null; created_at: string;
 }
 export interface NotificationPage { items: UserNotification[]; unread_count: number; next_cursor?: string | null }
@@ -134,7 +134,7 @@ export interface AuditLogEntry { id: string; actor_id?: string | null; action: s
 
 export interface AssistantResponse {
   answer: string;
-  mode: "DEMO" | "OPENAI";
+  mode: "DEMO" | "OPENAI" | "ANTHROPIC";
   scope: "INTERNAL" | "EXTERNAL_WEB";
   searched_web: boolean;
   knowledge_version: string;

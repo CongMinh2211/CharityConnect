@@ -42,7 +42,7 @@ export function renderEmail(row: OutboxRow): { subject: string; text: string; ht
     return {
       subject,
       text,
-      html: `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#10231d"><h1>Chào mừng ${escapeHtml(row.name)}!</h1><p>Tài khoản CharityConnect của bạn đã được tạo thành công.</p><p><a href="${webUrl}/dang-nhap" style="display:inline-block;padding:12px 20px;background:#8ed957;color:#10231d;border-radius:10px;text-decoration:none;font-weight:700">Đăng nhập CharityConnect</a></p><p style="color:#64748b">CharityConnect là đồ án mô phỏng; không xử lý thanh toán thật.</p></div>`,
+      html: `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#10231d"><h1>Chào mừng ${escapeHtml(row.name)}!</h1><p>Tài khoản CharityConnect của bạn đã được tạo thành công.</p><p><a href="${webUrl}/dang-nhap" style="display:inline-block;padding:12px 20px;background:#8ed957;color:#10231d;border-radius:10px;text-decoration:none;font-weight:700">Đăng nhập CharityConnect</a></p><p style="color:#64748b">CharityConnect ghi nhận đóng góp bằng VND và cung cấp biên nhận có thể xác minh công khai.</p></div>`,
     };
   }
   if (row.template === "CAMPAIGN_UPDATE") {
@@ -75,7 +75,7 @@ export function renderEmail(row: OutboxRow): { subject: string; text: string; ht
   return {
     subject,
     text,
-    html: `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#10231d"><p style="font-weight:700;color:#2e7148">CHARITYCONNECT</p><h1>Cảm ơn sự tử tế của bạn, ${escapeHtml(row.name)}!</h1><p>Khoản đóng góp <strong>${escapeHtml(formatVnd(row.payload.amount))}</strong> cho chiến dịch <strong>${escapeHtml(row.payload.campaign_title)}</strong> đã được ghi nhận.</p><div style="padding:16px;background:#f2f7ed;border-radius:12px"><div>Mã biên nhận</div><strong>${escapeHtml(receiptNumber)}</strong></div><p><a href="${verifyUrl}" style="display:inline-block;padding:12px 20px;background:#8ed957;color:#10231d;border-radius:10px;text-decoration:none;font-weight:700">Xác minh biên nhận</a></p><p style="color:#64748b">Khoản quyên góp trong đồ án là giao dịch mô phỏng.</p></div>`,
+    html: `<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;color:#10231d"><p style="font-weight:700;color:#2e7148">CHARITYCONNECT</p><h1>Cảm ơn sự tử tế của bạn, ${escapeHtml(row.name)}!</h1><p>Khoản đóng góp <strong>${escapeHtml(formatVnd(row.payload.amount))}</strong> cho chiến dịch <strong>${escapeHtml(row.payload.campaign_title)}</strong> đã được ghi nhận.</p><div style="padding:16px;background:#f2f7ed;border-radius:12px"><div>Mã biên nhận</div><strong>${escapeHtml(receiptNumber)}</strong></div><p><a href="${verifyUrl}" style="display:inline-block;padding:12px 20px;background:#8ed957;color:#10231d;border-radius:10px;text-decoration:none;font-weight:700">Xác minh biên nhận</a></p><p style="color:#64748b">Biên nhận được liên kết với sổ cái minh bạch CharityConnect.</p></div>`,
   };
 }
 
@@ -201,15 +201,22 @@ export async function startNotificationWorkers(): Promise<void> {
             const fields: Record<string, string> = {};
             for (let index = 0; index < flatFields.length; index += 2) fields[flatFields[index]] = flatFields[index + 1];
             if (fields.donor_id && fields.event_id) {
+              const title = "Cảm ơn bạn đã quyên góp";
+              const message = `Bạn đã quyên góp ${formatVnd(fields.amount)} cho chiến dịch "${fields.campaign_title}". Cảm ơn tấm lòng của bạn!`;
+              const path = `/bien-nhan/${fields.event_id}`;
               await pool.query(
                 `WITH accepted AS (
                    INSERT INTO processed_notification_events(event_id) VALUES($1)
                    ON CONFLICT DO NOTHING RETURNING event_id
+                 ), notice AS (
+                   INSERT INTO user_notifications(user_id,event_id,type,campaign_id,title,message,path)
+                   SELECT $2,accepted.event_id,'DONATION_RECEIVED',$4,$5,$6,$7 FROM accepted
+                   ON CONFLICT(user_id,event_id) DO NOTHING
                  )
                  INSERT INTO email_outbox(event_id,template,recipient_user_id,payload)
                  SELECT accepted.event_id,'DONATION_THANK_YOU',$2,$3::jsonb FROM accepted
                  ON CONFLICT(event_id,template) DO NOTHING`,
-                [fields.event_id, fields.donor_id, JSON.stringify({ amount: Number(fields.amount), campaign_title: fields.campaign_title, receipt_number: fields.receipt_number, completed_at: fields.completed_at })],
+                [fields.event_id, fields.donor_id, JSON.stringify({ amount: Number(fields.amount), campaign_title: fields.campaign_title, receipt_number: fields.receipt_number, completed_at: fields.completed_at }), fields.campaign_id, title, message, path],
               );
             }
             await redis.xAck(stream, group, messageId);

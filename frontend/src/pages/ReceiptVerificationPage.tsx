@@ -43,7 +43,7 @@ export function ReceiptVerificationPage(): JSX.Element {
   });
   const onchainStep = (() => {
     if (!result?.anchor) return { ok: false, pending: true, detail: "Chưa có điểm neo để đối chiếu" };
-    if (result.anchor.network !== "SEPOLIA") return { ok: true, pending: true, detail: "Anchor mô phỏng — không có giao dịch on-chain" };
+    if (result.anchor.network !== "SEPOLIA") return { ok: true, pending: true, detail: "Anchor nội bộ — chưa công bố lên Sepolia" };
     if (onchain.isLoading) return { ok: false, pending: true, detail: "Đang đọc giao dịch từ Sepolia…" };
     if (onchain.data?.onchain.onchain_verified) return { ok: true, pending: false, detail: `Root khớp on-chain · ${onchain.data.onchain.confirmations} xác nhận` };
     return { ok: false, pending: onchain.data?.onchain.reason === "TX_PENDING", detail: onchain.data?.onchain.reason ?? "Không đối chiếu được on-chain" };
@@ -54,7 +54,7 @@ export function ReceiptVerificationPage(): JSX.Element {
     {proof.isLoading && <div className="skeleton mx-auto mt-6 h-72 max-w-3xl" />}
     {result && copy && <article className="card mt-6 overflow-hidden"><div className={`flex items-start gap-3 p-6 ${copy.tone}`}>{result.verification_status === "INVALID" ? <AlertTriangle size={31} /> : <ShieldCheck size={31} />}<div><p className="font-black">{copy.title}</p><p className="mt-1 text-sm">{copy.detail}</p></div></div>
       <dl className="grid gap-5 border-b border-slate-200 p-6 sm:grid-cols-2"><div><dt className="text-sm text-slate-500">Mã biên nhận</dt><dd className="font-mono font-bold">{result.receipt_number}</dd></div><div><dt className="text-sm text-slate-500">Số tiền</dt><dd className="font-black text-brand-700">{formatVnd(result.amount)}</dd></div><div className="sm:col-span-2"><dt className="text-sm text-slate-500">Chiến dịch</dt><dd className="font-bold">{result.campaign_title}</dd></div></dl>
-      <div className="grid gap-3 p-6 md:grid-cols-4"><VerificationStep ok={result.proof_status === "CONFIRMED"} index="01" title="Ledger integrity" detail={`Bản ghi #${result.ledger_position} trong hash-chain`} /><VerificationStep ok={result.merkle_proof_valid} pending={!result.merkle_root} index="02" title="Merkle Proof" detail={result.merkle_root ? `${result.merkle_proof.length} node bằng chứng` : "Chưa được gom vào Merkle tree"} /><VerificationStep ok={Boolean(result.anchor && ["SIMULATED", "CONFIRMED"].includes(result.anchor.status))} pending={!result.anchor} index="03" title="Blockchain anchor" detail={result.anchor ? `${result.anchor.network} · ${result.anchor.status}` : "Đang chờ quản trị viên tạo điểm neo"} /><VerificationStep ok={onchainStep.ok} pending={onchainStep.pending} index="04" title="Đối chiếu on-chain" detail={onchainStep.detail} /></div>
+      <div className="grid gap-3 p-6 md:grid-cols-4"><VerificationStep ok={result.proof_status === "CONFIRMED"} index="01" title="Ledger integrity" detail={`Bản ghi #${result.ledger_position} trong hash-chain`} /><VerificationStep ok={result.merkle_proof_valid} pending={!result.merkle_root} index="02" title="Merkle Proof" detail={result.merkle_root ? `${result.merkle_proof.length} node bằng chứng` : "Chưa được gom vào Merkle tree"} /><VerificationStep ok={Boolean(result.anchor && ["SIMULATED", "CONFIRMED"].includes(result.anchor.status))} pending={!result.anchor} index="03" title="Blockchain anchor" detail={result.anchor ? `${anchorNetworkLabel(result.anchor.network)} · ${anchorStatusLabel(result.anchor.status)}` : "Đang chờ quản trị viên tạo điểm neo"} /><VerificationStep ok={onchainStep.ok} pending={onchainStep.pending} index="04" title="Đối chiếu on-chain" detail={onchainStep.detail} /></div>
       <div className="space-y-4 bg-slate-950 p-6 text-slate-200"><HashLine label="Ledger hash" value={result.ledger_hash} /><HashLine label="Merkle root" value={result.merkle_root ?? "Chưa có"} /><ProofExportButton position={result.ledger_position} sepolia={result.anchor?.network === "SEPOLIA"} />{result.anchor && <><HashLine label="Transaction" value={result.anchor.anchor_tx_hash} /><p className="text-xs text-slate-400">Phạm vi #{result.anchor.from_position}–#{result.anchor.to_position}{result.anchor.block_number ? ` · Block ${result.anchor.block_number}` : ""}</p>{result.anchor.explorer_url && <a className="inline-flex items-center gap-2 text-sm font-bold text-emerald-300 hover:text-emerald-200" href={result.anchor.explorer_url} target="_blank" rel="noreferrer">Mở trên explorer <ExternalLink size={15} /></a>}</>}</div>
     </article>}
     {proof.isError && <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-center font-semibold text-rose-800">Không tìm thấy biên nhận hợp lệ trên sổ cái.</div>}
@@ -64,6 +64,14 @@ export function ReceiptVerificationPage(): JSX.Element {
 function VerificationStep({ ok, pending, index, title, detail }: { ok: boolean; pending?: boolean; index: string; title: string; detail: string }): JSX.Element {
   const tone = pending ? "border-amber-200 bg-amber-50" : ok ? "border-brand-200 bg-brand-50" : "border-rose-200 bg-rose-50";
   return <div className={`rounded-2xl border p-4 ${tone}`}><div className="flex items-center justify-between"><span className="font-mono text-xs font-bold text-slate-500">{index}</span>{ok ? <CheckCircle2 className="text-brand-700" size={20} /> : <AlertTriangle className={pending ? "text-amber-600" : "text-rose-600"} size={20} />}</div><p className="mt-4 font-black">{title}</p><p className="mt-1 text-xs leading-5 text-slate-600">{detail}</p></div>;
+}
+
+function anchorNetworkLabel(network: string): string {
+  return network === "LOCAL_SIMULATION" ? "Anchor nội bộ" : network;
+}
+
+function anchorStatusLabel(status: string): string {
+  return status === "SIMULATED" ? "Đã xác nhận nội bộ" : status;
 }
 function ProofExportButton({ position, sepolia }: { position: number; sepolia?: boolean }): JSX.Element {
   const [busy, setBusy] = useState(false);

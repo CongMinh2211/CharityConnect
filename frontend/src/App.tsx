@@ -4,6 +4,9 @@ import { AuthGuard } from "./auth/AuthGuard";
 import { AppShell } from "./app/AppShell";
 
 const CampaignListPage = lazy(() => import("./features/campaigns/CampaignListPage").then((module) => ({ default: module.CampaignListPage })));
+const VerifyHomePage = lazy(() => import("./features/content/VerifyHomePage").then((module) => ({ default: module.VerifyHomePage })));
+const ContentListPage = lazy(() => import("./features/content/ContentListPage").then((module) => ({ default: module.ContentListPage })));
+const ContentArticlePage = lazy(() => import("./features/content/ContentArticlePage").then((module) => ({ default: module.ContentArticlePage })));
 const CampaignDetailPage = lazy(() => import("./features/campaigns/CampaignDetailPage").then((module) => ({ default: module.CampaignDetailPage })));
 const DonationPage = lazy(() => import("./features/donations/DonationPage").then((module) => ({ default: module.DonationPage })));
 const LoginPage = lazy(() => import("./features/account/LoginPage").then((module) => ({ default: module.LoginPage })));
@@ -25,7 +28,11 @@ const NotFoundPage = lazy(() => import("./shared/components/NotFoundPage").then(
 export function App(): JSX.Element {
   return <Suspense fallback={<div className="container-page py-12" role="status">Đang tải…</div>}>
     <Routes><Route element={<AppShell />}>
-      <Route index element={<CampaignListPage />} />
+      <Route index element={<VerifyHomePage />} />
+      <Route path="chien-dich" element={<CampaignListPage />} />
+      <Route path="kiem-chung" element={<ContentListPage />} />
+      <Route path="canh-bao" element={<ContentListPage mode="alerts" />} />
+      <Route path="bai-viet/:slug" element={<ContentArticlePage />} />
       <Route path="chien-dich/:id" element={<CampaignDetailPage />} />
       <Route path="minh-bach" element={<TransparencyPage />} />
       <Route path="thong-ke" element={<StatisticsPage />} />

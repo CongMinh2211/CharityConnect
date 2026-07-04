@@ -34,6 +34,8 @@
   .stat-tile { @apply rounded-3xl border border-ink/10 bg-white/80 p-5 text-center shadow-card backdrop-blur; }
   .progress-track { @apply h-2.5 w-full overflow-hidden rounded-full bg-sage-200; }
   .progress-fill { @apply h-full rounded-full transition-all duration-500; background-image: linear-gradient(90deg, #c9ecab, #6cbf3d); }
+  .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 }
 
 @media (prefers-reduced-motion: reduce) {

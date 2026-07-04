@@ -1,5 +1,6 @@
 import { roleFunctionGroups } from "../shared/lib/roleGuide";
-import type { AccountSession, AccountUser, AnalyticsPeriod, AuditLogEntry, Campaign, CampaignAnalytics, CampaignEscrow, CampaignPreference, Donation, DonationAnalytics, FinancialPlan, ImpactEvidence, ImpactReport, LedgerAnchor, LedgerEntry, MerkleProofNode, NotificationPage, RiskAssessment, Role, RoleGuideRole, User, UserAnalytics, UserNotification } from "../types";
+import { contentArticles, contentHomeSeed, contentKpis, contentSources } from "../features/content/contentSeed";
+import type { AccountSession, AccountUser, AnalyticsPeriod, AuditLogEntry, Campaign, CampaignAnalytics, CampaignEscrow, CampaignPreference, ContentArticlePage, Donation, DonationAnalytics, FinancialPlan, ImpactEvidence, ImpactReport, LedgerAnchor, LedgerEntry, MerkleProofNode, NotificationPage, RiskAssessment, Role, RoleGuideRole, User, UserAnalytics, UserNotification } from "../types";
 
 interface OrganizationProfile {
   user_id: string;
@@ -572,6 +573,43 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   const pathname = url.pathname;
   const body = bodyAsObject(options);
 
+  if (pathname === "/content/home" && method === "GET") return contentHomeSeed as T;
+  if (pathname === "/content/sources" && method === "GET") return contentSources as T;
+  if (pathname === "/content/kpis" && method === "GET") return contentKpis as T;
+  if (pathname === "/content/alerts" && method === "GET") return contentArticles.filter((article) => article.status === "PUBLISHED" && article.type === "ALERT") as T;
+  if (pathname === "/content/articles" && method === "GET") {
+    const q = (url.searchParams.get("q") ?? "").toLocaleLowerCase("vi");
+    const type = url.searchParams.get("type");
+    const sourceLevel = url.searchParams.get("source_level");
+    const tag = url.searchParams.get("tag");
+    const page = Math.max(1, Number(url.searchParams.get("page") ?? "1"));
+    const pageSize = 9;
+    const filtered = contentArticles.filter((article) => {
+      const haystack = `${article.title} ${article.excerpt} ${article.summary} ${article.tags.join(" ")}`.toLocaleLowerCase("vi");
+      return article.status === "PUBLISHED"
+        && (!q || haystack.includes(q))
+        && (!type || article.type === type)
+        && (!sourceLevel || article.source.level === sourceLevel)
+        && (!tag || article.tags.includes(tag));
+    });
+    return {
+      items: filtered.slice((page - 1) * pageSize, page * pageSize),
+      total: filtered.length,
+      page,
+      page_size: pageSize,
+    } as ContentArticlePage as T;
+  }
+  const contentArticleDetail = pathname.match(/^\/content\/articles\/([^/]+)$/);
+  if (contentArticleDetail && method === "GET") {
+    const article = contentArticles.find((item) => item.slug === contentArticleDetail[1] && item.status === "PUBLISHED");
+    if (!article) throw Object.assign(new Error("Không tìm thấy bài viết minh bạch."), { status: 404 });
+    return article as T;
+  }
+  if (pathname === "/admin/content/ingest" && method === "POST") {
+    requireRole("ADMIN");
+    return { ingested: 0, reviewed: contentArticles.length, message: "Kho seed đã sẵn sàng; crawl live chỉ chạy với whitelist nguồn chính thống." } as T;
+  }
+
   const period = analyticsPeriod(url.searchParams.get("period"));
   if (pathname === "/analytics/donations/public" && method === "GET") return donationAnalytics(state, period, state.donations) as T;
   if (pathname === "/analytics/campaigns/public" && method === "GET") return campaignAnalytics(state, period) as T;
@@ -585,15 +623,54 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
 
   if (pathname === "/assistant/chat" && method === "POST") {
     const message = String(body.message ?? "").toLocaleLowerCase("vi");
-    let answer = "Mình có thể hướng dẫn quyên góp, xác minh biên nhận, xem sổ cái minh bạch hoặc sử dụng dashboard theo từng vai trò.";
-    if (message.includes("đăng nhập") || message.includes("tài khoản")) {
+    const vnd = (value: number): string => new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(value);
+    let answer = "Mình có thể hướng dẫn quyên góp, xác minh biên nhận, xem sổ cái minh bạch, kiểm chứng nguồn từ thiện hoặc tóm tắt thống kê. Bạn cần phần nào?";
+    let sources: Array<{ kind: "INTERNAL" | "WEB"; title: string; path?: string; url?: string }> = [{ kind: "INTERNAL", title: "Hướng dẫn sử dụng CharityConnect", path: "/" }];
+    let actions: Array<{ label: string; path: string }> = [{ label: "Xem chiến dịch", path: "/chien-dich" }];
+    let suggestions = ["Tóm tắt thống kê quyên góp", "Có cảnh báo từ thiện giả nào mới?", "Cách xác minh biên nhận?"];
+
+    const statsQuestion = ["thống kê", "tóm tắt", "bao nhiêu tiền", "tổng quyên góp", "số liệu", "báo cáo tài chính", "số dư"].some((term) => message.includes(term));
+    const alertQuestion = ["cảnh báo", "lừa đảo", "từ thiện giả", "giả mạo", "sai phạm"].some((term) => message.includes(term));
+    const verifyQuestion = ["kiểm chứng", "nguồn chính thống", "nuôi em", "kpi", "minh bạch nguồn", "điểm minh bạch"].some((term) => message.includes(term));
+    const outOfScope = ["thời tiết", "tỷ giá", "chứng khoán", "bóng đá", "phim", "nấu ăn", "du lịch"].some((term) => message.includes(term));
+
+    if (outOfScope) {
+      answer = "Câu hỏi này nằm ngoài dữ liệu CharityConnect. Ở bản demo (mock) mình chỉ trả lời từ dữ liệu nội bộ; muốn tra cứu nguồn ngoài có trích dẫn, hãy chạy assistant-service (cổng 8001) và cấu hình ANTHROPIC_API_KEY hoặc OPENAI_API_KEY trong file .env.";
+      sources = [];
+      actions = [{ label: "Xem hướng dẫn", path: "/" }];
+    } else if (statsQuestion) {
+      const analytics = donationAnalytics(state, "all", state.donations);
+      const totals = analytics.totals;
+      const top = analytics.top_campaigns[0];
+      answer = `Tóm tắt thống kê CharityConnect hiện tại:\n- Tổng quyên góp: ${vnd(totals.donation_amount)} qua ${totals.donation_count} lượt từ ${totals.unique_donors} nhà hảo tâm.\n- Trung bình mỗi lượt: ${vnd(totals.average_amount)}.\n- Quỹ đã giải ngân được nghiệm thu: ${vnd(totals.verified_fund_usage)}; số dư minh bạch: ${vnd(totals.transparent_balance)}.${top ? `\n- Chiến dịch dẫn đầu: "${top.campaign_title}" với ${vnd(top.donation_amount)} (${top.donation_count} lượt).` : ""}\nMở /thong-ke để xem biểu đồ theo thời gian.`;
+      sources = [{ kind: "INTERNAL", title: "Bảng thống kê /thong-ke", path: "/thong-ke" }, { kind: "INTERNAL", title: "Sổ cái minh bạch", path: "/minh-bach" }];
+      actions = [{ label: "Mở thống kê", path: "/thong-ke" }];
+      suggestions = ["Chiến dịch nào đang gây quỹ?", "Có cảnh báo từ thiện giả nào mới?", "Cách xác minh biên nhận?"];
+    } else if (alertQuestion) {
+      const alerts = contentArticles.filter((article) => article.type === "ALERT" && article.status === "PUBLISHED");
+      const lines = alerts.slice(0, 3).map((article) => `- ${article.title} (${article.source.name}${article.source_published_at ? `, ${article.source_published_at.slice(0, 7)}` : ""})`);
+      answer = `Kho cảnh báo đang có ${alerts.length} vụ việc/cảnh báo đã kiểm chứng nguồn:\n${lines.join("\n")}\nMỗi bài đều gắn nhãn mức căn cứ (cơ quan xử lý / báo chí cảnh báo) và link về nguồn gốc. Mở /canh-bao để xem đầy đủ.`;
+      sources = alerts.slice(0, 3).map((article) => ({ kind: "INTERNAL" as const, title: article.title, path: `/bai-viet/${article.slug}` }));
+      actions = [{ label: "Xem cảnh báo", path: "/canh-bao" }];
+      suggestions = ["Cách nhận biết fanpage giả mạo?", "Tóm tắt thống kê quyên góp", "Điểm minh bạch tính thế nào?"];
+    } else if (verifyQuestion) {
+      const nuoiEm = contentArticles.find((article) => article.slug.includes("nuoi-em"));
+      answer = `Kho kiểm chứng hiện có ${contentKpis.sources_total} nguồn theo dõi, ${contentKpis.official_articles} bài nguồn chính thống, ${contentKpis.alert_cases} cảnh báo và ${contentKpis.evidence_rate}% bài có số liệu/bằng chứng. ${nuoiEm ? `Ví dụ: bài "${nuoiEm.title}" đạt ${nuoiEm.score.total}/100 (hạng ${nuoiEm.score.grade}); claim nổi bật: ${nuoiEm.claims[0]?.value}.` : ""} Điểm minh bạch 100 = 30 nguồn chính thống + 25 tài chính/sao kê + 20 pháp lý + 15 bằng chứng + 10 độ mới.`;
+      sources = [{ kind: "INTERNAL", title: "Kho kiểm chứng nguồn", path: "/kiem-chung" }];
+      actions = [{ label: "Mở kiểm chứng", path: "/kiem-chung" }];
+    } else if (message.includes("đăng nhập") || message.includes("tài khoản")) {
       answer = "Bạn mở Đăng nhập, chọn nhanh một trong ba vai trò ở khung bên trái rồi hệ thống sẽ tự điền thông tin phù hợp.";
+      actions = [{ label: "Đăng nhập", path: "/dang-nhap" }];
     } else if (message.includes("quyên góp") || message.includes("ủng hộ")) {
-      answer = "Đăng nhập vai trò người quyên góp, chọn một chiến dịch còn hạn, bấm Quyên góp, nhập số tiền và xác nhận. Hệ thống ghi nhận giao dịch, phát hành biên nhận và đưa vào sổ cái minh bạch.";
+      const active = publicCampaigns(state).slice(0, 3);
+      answer = `Đăng nhập vai trò người quyên góp, chọn một chiến dịch còn hạn, bấm Quyên góp, nhập số tiền và xác nhận. Hệ thống phát hành biên nhận CC-... và ghi vào sổ cái minh bạch. Đang gây quỹ: ${active.map((item) => `"${item.title}" (${Math.round(item.raised_amount * 100 / item.goal_amount)}%)`).join(", ")}.`;
+      actions = [{ label: "Xem chiến dịch", path: "/chien-dich" }];
     } else if (message.includes("biên nhận") || message.includes("qr")) {
       answer = "Sau khi quyên góp thành công, mở biên nhận để xem QR và hash. Bạn cũng có thể vào Xác minh biên nhận, nhập mã CC-... để kiểm tra bằng chứng công khai.";
+      actions = [{ label: "Xác minh biên nhận", path: "/xac-minh-bien-nhan" }];
     } else if (message.includes("minh bạch") || message.includes("hash") || message.includes("blockchain")) {
       answer = "Trang Minh bạch công khai chuỗi hash SHA-256 của quyên góp và báo cáo sử dụng quỹ. Chuỗi này giúp phát hiện dữ liệu bị sửa, nhưng không phải tiền mã hóa hay blockchain phi tập trung.";
+      actions = [{ label: "Mở sổ cái", path: "/minh-bach" }];
     } else if (message.includes("tổ chức") || message.includes("báo cáo")) {
       answer = "Tổ chức đã xác minh có thể tạo và nộp chiến dịch, theo dõi quyên góp, rồi gửi báo cáo sử dụng quỹ kèm 1–5 ảnh hoặc PDF để quản trị viên kiểm duyệt.";
     } else if (message.includes("admin") || message.includes("kiểm duyệt")) {
@@ -602,12 +679,12 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     return {
       answer,
       mode: "DEMO",
-      scope: "INTERNAL",
+      scope: outOfScope ? "EXTERNAL_WEB" : "INTERNAL",
       searched_web: false,
-      knowledge_version: "charityconnect-2026.06",
-      sources: [{ kind: "INTERNAL", title: "Hướng dẫn sử dụng CharityConnect", path: "/" }],
-      actions: [{ label: "Xem chiến dịch", path: "/" }],
-      suggestions: ["Cách đăng nhập?", "Cách xác minh biên nhận?", "Hash-chain hoạt động thế nào?"]
+      knowledge_version: "charityconnect-2026.07",
+      sources,
+      actions,
+      suggestions
     } as T;
   }
   if (pathname === "/assistant/role-guide" && method === "GET") {
@@ -796,7 +873,13 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   }
 
   if (pathname === "/auth/login" && method === "POST") {
-    const user = state.users.find((item) => item.email === body.email && item.password === body.password);
+    const loginAliases: Record<string, string> = {
+      "nguoituthien@charityconnect.vn": "donor@demo.vn",
+      "tochuc@charityconnect.vn": "org@demo.vn",
+      "quantri@charityconnect.vn": "admin@demo.vn",
+    };
+    const loginEmail = loginAliases[String(body.email)] ?? String(body.email);
+    const user = state.users.find((item) => item.email === loginEmail && item.password === body.password);
     if (user?.status === "DISABLED") throw Object.assign(new Error("Tài khoản đã bị khóa."), { status: 403 });
     if (!user) throw Object.assign(new Error("Email hoặc mật khẩu chưa đúng."), { status: 401 });
     const session = createSession(state, user);

@@ -26,7 +26,13 @@ export function ForgotPasswordPage(): JSX.Element {
         {mutation.data && (
           <div className="mt-5 rounded-2xl bg-brand-50 p-4 text-sm">
             <p className="font-bold text-brand-800">{mutation.data.message}</p>
-            {isMockMode && mutation.data.demo_token && <p className="mt-2 break-all text-slate-600">Token đặt lại: <Link className="font-black text-brand-700" to={`/dat-lai-mat-khau?token=${encodeURIComponent(mutation.data.demo_token)}`}>{mutation.data.demo_token}</Link></p>}
+            {isMockMode && mutation.data.demo_token && (
+              <p className="mt-2 text-slate-600">
+                <Link className="font-black text-brand-700" to={`/dat-lai-mat-khau?token=${encodeURIComponent(mutation.data.demo_token)}`}>
+                  Mở liên kết đặt lại mật khẩu
+                </Link>
+              </p>
+            )}
           </div>
         )}
         {mutation.error && <p className="mt-4 rounded-2xl bg-rose-50 p-4 text-sm font-bold text-rose-700">{mutation.error.message}</p>}
@@ -35,4 +41,3 @@ export function ForgotPasswordPage(): JSX.Element {
     </div>
   );
 }
-

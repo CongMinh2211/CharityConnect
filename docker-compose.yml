@@ -103,6 +103,9 @@ services:
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4.1-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ASSISTANT_PROVIDER: ${ASSISTANT_PROVIDER:-auto}
       CAMPAIGN_SERVICE_URL: http://campaign-service:3002
       DONATION_SERVICE_URL: http://donation-service:8000
     healthcheck:

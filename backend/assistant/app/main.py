@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from . import content_verify
 from .guides import RoleGuideRole, role_guide
 from .knowledge import KNOWLEDGE_BASE, KNOWLEDGE_VERSION, classify_intent, fold, grounding_for, is_in_scope
 
@@ -109,6 +110,17 @@ class RoleGuideResponse(BaseModel):
     knowledge_version: str = KNOWLEDGE_VERSION
 
 
+class ContentIngestRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=8)
+
+
+class AnalyzeSourceRequest(BaseModel):
+    url: str
+    has_financial_report: bool = False
+    has_legal_identity: bool = False
+    has_media: bool = False
+
+
 def sanitize_text(value: str) -> str:
     value = re.sub(r"sk-[A-Za-z0-9_-]{12,}", "[API_KEY_ĐÃ_ẨN]", value)
     value = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[EMAIL_ĐÃ_ẨN]", value)
@@ -180,17 +192,50 @@ def _campaign_lookup(folded_msg: str, campaigns: list[dict]) -> str | None:
     return None
 
 
+def _parse_facts(context_str: str) -> dict:
+    for prefix in ("DỮ LIỆU WEBSITE HIỆN TẠI:\n", "Dá»® LIá»†U WEBSITE HIá»†N Táº I:\n"):
+        if context_str.startswith(prefix):
+            try:
+                return json.loads(context_str[len(prefix):])
+            except Exception:
+                return {}
+    return {}
+
+
 def smart_offline_answer(message: str, context_str: str) -> str:
     folded = fold(message)
     facts = _parse_facts(context_str)
     campaigns = facts.get("campaigns", []) or []
     totals = facts.get("donation_analytics", {}).get("totals", {}) or {}
+    content_kpis = facts.get("content_kpis", {}) or {}
+    content_articles = facts.get("content_articles", []) or []
     intent = classify_intent(message)
 
     # 1) Direct lookup of a specific campaign by name (highest value).
     named = _campaign_lookup(folded, campaigns)
     if named:
         return named
+
+    verify_terms = ("tre em vung cao", "nuoi em", "tu thien gia", "canh bao", "nguon chinh thong",
+                    "kiem chung", "kpi minh bach", "diem minh bach")
+    if any(term in folded for term in verify_terms):
+        matched = []
+        for article in content_articles:
+            text = fold(" ".join([article.get("title", ""), " ".join(article.get("tags", []))]))
+            if any(term in text for term in ("tre em", "vung cao", "nuoi em")) or any(term in folded for term in ("canh bao", "tu thien gia", "nguon chinh thong", "kpi")):
+                matched.append(article)
+        article_lines = []
+        for article in matched[:3]:
+            claims = article.get("claims", [])
+            claim_text = f" — {claims[0].get('label')}: {claims[0].get('value')}" if claims else ""
+            article_lines.append(f"- {article.get('title')} ({article.get('source')}, cấp {article.get('source_level')}, {article.get('score')}/100, hạng {article.get('grade')}){claim_text}")
+        return (
+            "Tóm tắt dữ liệu kiểm chứng CharityConnect:\n"
+            f"- Nguồn đang theo dõi: {content_kpis.get('sources_total', 0)}; bài có nguồn chính thống: {content_kpis.get('official_articles', 0)}; cảnh báo đã phân loại: {content_kpis.get('alert_cases', 0)}.\n"
+            f"- Tỷ lệ bài có claim/bằng chứng: {content_kpis.get('evidence_rate', 0)}%; link nguồn seed đang sống: {content_kpis.get('live_source_rate', 0)}%.\n"
+            + ("\n".join(article_lines) if article_lines else "- Chưa có bài phù hợp trong kho nội bộ.")
+            + "\nBạn có thể mở /kiem-chung để xem card ngắn hoặc /canh-bao để xem các case rủi ro."
+        )
 
     # 2) System-wide financial snapshot from live donation analytics.
     stat_terms = ("thong ke", "tong quyen gop", "tien quyen gop", "bao nhieu tien",
@@ -209,6 +254,11 @@ def smart_offline_answer(message: str, context_str: str) -> str:
                 f"- Quỹ đã giải ngân nghiệm thu: {used:,.0f} VND\n"
                 f"- Số dư minh bạch khả dụng: {balance:,.0f} VND (100% đối soát khớp hash-chain)."
             )
+        return (
+            "Mình chưa kết nối được Donation Service (cổng 8000) để đọc số liệu trực tiếp, nên chưa thể tóm tắt con số tại đây.\n"
+            "- Xem nhanh: mở trang /thong-ke — tổng quyên góp, lượt đóng góp, quỹ đã dùng và biểu đồ theo thời gian.\n"
+            "- Muốn mình tóm tắt số liệu ngay trong chat: khởi động đủ backend (docker compose up hoặc chạy donation-service) rồi hỏi lại."
+        )
 
     # 3) Listing of active campaigns when the user asks broadly.
     list_terms = ("chien dich", "danh sach", "gay quy", "hoat dong", "ung ho", "quyen gop")
@@ -299,6 +349,59 @@ async def anthropic_answer(payload: ChatRequest, internal_context: str = "") -> 
     return text or "Mình chưa nhận được nội dung trả lời từ Claude."
 
 
+def anthropic_sources(content: list[dict[str, Any]]) -> list[AssistantSource]:
+    sources: list[AssistantSource] = []
+    seen: set[str] = set()
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "web_search_tool_result":
+            result_content = block.get("content", [])
+            if isinstance(result_content, dict):
+                result_content = [result_content]
+            for result in result_content or []:
+                if not isinstance(result, dict) or result.get("type") != "web_search_result":
+                    continue
+                url = result.get("url")
+                if url and url not in seen:
+                    sources.append(AssistantSource(kind="WEB", title=result.get("title") or url, url=url))
+                    seen.add(url)
+        for citation in block.get("citations", []) or []:
+            if not isinstance(citation, dict) or citation.get("type") != "web_search_result_location":
+                continue
+            url = citation.get("url")
+            if url and url not in seen:
+                sources.append(AssistantSource(kind="WEB", title=citation.get("title") or url, url=url))
+                seen.add(url)
+    return sources
+
+
+async def anthropic_web_answer(payload: ChatRequest) -> tuple[str, list[AssistantSource]]:
+    body: dict[str, Any] = {
+        "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+        "max_tokens": int(os.getenv("ANTHROPIC_WEB_MAX_TOKENS", os.getenv("ANTHROPIC_MAX_TOKENS", "700"))),
+        "system": EXTERNAL_INSTRUCTIONS,
+        "messages": anthropic_input(payload),
+        "tools": [{
+            "type": os.getenv("ANTHROPIC_WEB_SEARCH_TOOL", "web_search_20250305"),
+            "name": "web_search",
+            "max_uses": int(os.getenv("ANTHROPIC_WEB_SEARCH_MAX_USES", "3")),
+        }],
+    }
+    headers = {
+        "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+        "anthropic-version": os.getenv("ANTHROPIC_VERSION", "2023-06-01"),
+        "content-type": "application/json",
+    }
+    async with httpx.AsyncClient(timeout=35) as client:
+        response = await client.post(os.getenv("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages"), headers=headers, json=body)
+        response.raise_for_status()
+    data = response.json()
+    content = data.get("content", [])
+    text = "".join(block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text").strip()
+    return text, anthropic_sources(content)
+
+
 def web_answer(payload: ChatRequest) -> tuple[str, list[AssistantSource]]:
     response = create_openai_client().responses.create(
         model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"), instructions=EXTERNAL_INSTRUCTIONS,
@@ -336,6 +439,41 @@ async def load_internal_context(path: str) -> str:
 
 
 RECEIPT_PATTERN = re.compile(r"\bCC-\d{8}-[A-Z0-9]{10}\b", re.IGNORECASE)
+
+
+async def load_internal_context(path: str) -> str:
+    campaign_url = os.getenv("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
+    donation_url = os.getenv("DONATION_SERVICE_URL", "http://donation-service:8000")
+    facts: dict[str, object] = {
+        "content_kpis": content_verify.kpis(),
+        "content_articles": [
+            {
+                "title": item["title"],
+                "type": item["type"],
+                "source": item["source"]["name"],
+                "source_level": item["source"]["level"],
+                "score": item["score"]["total"],
+                "grade": item["score"]["grade"],
+                "claims": item["claims"],
+                "tags": item["tags"],
+            }
+            for item in content_verify.ARTICLES
+            if item["status"] == "PUBLISHED"
+        ][:10],
+    }
+    async with httpx.AsyncClient(timeout=2) as client:
+        calls = [
+            client.get(f"{campaign_url}/campaigns"),
+            client.get(f"{campaign_url}/analytics/campaigns/public?period=30d"),
+            client.get(f"{donation_url}/analytics/donations/public?period=30d"),
+            client.get(f"{donation_url}/transparency/anchors/health"),
+        ]
+        results = await asyncio.gather(*calls, return_exceptions=True)
+    labels = ["campaigns", "campaign_analytics", "donation_analytics", "trustchain_health"]
+    for label, result in zip(labels, results):
+        if isinstance(result, httpx.Response) and result.status_code == 200:
+            facts[label] = result.json()
+    return "DỮ LIỆU WEBSITE HIỆN TẠI:\n" + json.dumps(facts, ensure_ascii=False)[:12000]
 
 
 async def verify_receipt_in_chat(message: str) -> ChatResponse | None:
@@ -406,11 +544,12 @@ def enforce_rate_limit(client_id: str) -> None:
 @app.get("/health")
 async def health() -> dict[str, object]:
     provider = configured_provider()
+    external_search = bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY"))
     return {
         "status": "ok",
         "mode": provider or "DEMO",
         "scope": "INTERNAL_FIRST_WITH_WEB_FALLBACK",
-        "external_search": bool(os.getenv("OPENAI_API_KEY")),
+        "external_search": external_search,
         "providers": {
             "openai": bool(os.getenv("OPENAI_API_KEY")),
             "anthropic": bool(os.getenv("ANTHROPIC_API_KEY")),
@@ -421,7 +560,56 @@ async def health() -> dict[str, object]:
 
 @app.get("/assistant/capabilities")
 async def capabilities() -> dict[str, object]:
-    return {"scope": "Internal first, cited web fallback", "provider": configured_provider() or "DEMO", "external_search": bool(os.getenv("OPENAI_API_KEY")), "history_turns": 6, "sensitive_data_redaction": True, "knowledge_version": KNOWLEDGE_VERSION}
+    return {"scope": "Internal first, cited web fallback", "provider": configured_provider() or "DEMO", "external_search": bool(os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY")), "history_turns": 6, "sensitive_data_redaction": True, "knowledge_version": KNOWLEDGE_VERSION}
+
+
+@app.get("/content/home")
+async def content_home() -> dict[str, Any]:
+    return content_verify.home()
+
+
+@app.get("/content/articles")
+async def content_articles(q: str = "", type: str | None = None, source_level: str | None = None, tag: str | None = None, page: int = 1) -> dict[str, Any]:
+    return content_verify.list_articles(q=q, article_type=type, source_level=source_level, tag=tag, page=page)
+
+
+@app.get("/content/articles/{slug}")
+async def content_article_detail(slug: str) -> dict[str, Any]:
+    article = content_verify.get_article(slug)
+    if not article:
+        raise HTTPException(status_code=404, detail="Không tìm thấy bài viết minh bạch.")
+    return article
+
+
+@app.get("/content/alerts")
+async def content_alerts() -> list[dict[str, Any]]:
+    return [item for item in content_verify.ARTICLES if item["status"] == "PUBLISHED" and item["type"] == "ALERT"]
+
+
+@app.get("/content/sources")
+async def content_sources() -> list[dict[str, Any]]:
+    return content_verify.SOURCES
+
+
+@app.get("/content/kpis")
+async def content_kpis() -> dict[str, Any]:
+    return content_verify.kpis()
+
+
+@app.post("/admin/content/ingest")
+async def admin_content_ingest(payload: ContentIngestRequest) -> dict[str, Any]:
+    results = await asyncio.gather(*(content_verify.ingest_url(url) for url in payload.urls))
+    return {"ingested": sum(1 for item in results if item.get("accepted")), "results": results}
+
+
+@app.post("/assistant/analyze-source")
+async def assistant_analyze_source(payload: AnalyzeSourceRequest) -> dict[str, Any]:
+    return content_verify.analyze_source(
+        payload.url,
+        has_financial_report=payload.has_financial_report,
+        has_legal_identity=payload.has_legal_identity,
+        has_media=payload.has_media,
+    )
 
 
 @app.get("/assistant/role-guide", response_model=RoleGuideResponse)
@@ -457,8 +645,17 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             except Exception:
                 context = ""
             return internal_response(smart_offline_answer(payload.message, context), "DEMO", payload.message)
+    external_provider = configured_provider()
+    if external_provider == "ANTHROPIC" and os.getenv("ANTHROPIC_API_KEY"):
+        try:
+            answer, sources = await asyncio.wait_for(anthropic_web_answer(payload), timeout=35)
+            if not sources: raise RuntimeError("anthropic web search returned no citations")
+            return ChatResponse(answer=safe_answer(answer), mode="ANTHROPIC", scope="EXTERNAL_WEB", searched_web=True, sources=sources, actions=[], suggestions=["Hỏi tiếp về chủ đề này", "Quay lại CharityConnect"])
+        except Exception:
+            if not os.getenv("OPENAI_API_KEY"):
+                return ChatResponse(answer="Mình chưa thể hoàn tất tra cứu nguồn ngoài qua Claude lúc này. Vui lòng kiểm tra ANTHROPIC_API_KEY, quyền web search hoặc thử lại sau.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về CharityConnect"])
     if not os.getenv("OPENAI_API_KEY"):
-        return ChatResponse(answer="Câu hỏi này nằm ngoài dữ liệu CharityConnect. Phần tra cứu nguồn ngoài cần OPENAI_API_KEY để dùng web_search có trích dẫn URL, nên mình chưa thể tra cứu lúc này.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về quyên góp", "Xem thống kê", "Xác minh biên nhận"])
+        return ChatResponse(answer="Câu hỏi này nằm ngoài dữ liệu CharityConnect. Phần tra cứu nguồn ngoài cần cấu hình ANTHROPIC_API_KEY hoặc OPENAI_API_KEY trong .env để dùng web search có trích dẫn URL, nên mình chưa thể tra cứu lúc này.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về quyên góp", "Xem thống kê", "Xác minh biên nhận"])
     try:
         answer, sources = await asyncio.wait_for(asyncio.to_thread(web_answer, payload), timeout=25)
         if not sources: raise RuntimeError("web search returned no citations")

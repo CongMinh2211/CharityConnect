@@ -1,5 +1,6 @@
 import {
   ArrowRight,
+  AlertTriangle,
   BarChart3,
   Bell,
   Bot,
@@ -11,11 +12,13 @@ import {
   LayoutDashboard,
   ListChecks,
   Lock,
+  Newspaper,
   ReceiptText,
   Search,
   ShieldCheck,
   UserRoundCog,
   Users,
+  Video,
   WalletCards
 } from "lucide-react";
 import type { MouseEvent } from "react";
@@ -24,6 +27,7 @@ import type { Role } from "../../types";
 import { canUseFunction, groupsForMenu, type FunctionIcon } from "../lib/roleGuide";
 
 export const iconMap: Record<FunctionIcon, typeof Search> = {
+  alert: AlertTriangle,
   "bar-chart": BarChart3,
   bell: Bell,
   bot: Bot,
@@ -34,11 +38,13 @@ export const iconMap: Record<FunctionIcon, typeof Search> = {
   landmark: Landmark,
   layout: LayoutDashboard,
   list: ListChecks,
+  newspaper: Newspaper,
   receipt: ReceiptText,
   search: Search,
   shield: ShieldCheck,
   "user-cog": UserRoundCog,
   users: Users,
+  video: Video,
   wallet: WalletCards
 };
 

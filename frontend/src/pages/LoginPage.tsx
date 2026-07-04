@@ -19,7 +19,15 @@ export function LoginPage(): JSX.Element {
   const [password, setPassword] = useState("");
   const mutation = useMutation({ mutationFn: () => api<AuthPayload>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }), onSuccess(payload) { login(payload); navigate(payload.user.role === "ADMIN" ? "/quan-tri" : payload.user.role === "ORGANIZATION" ? "/to-chuc" : "/"); } });
   function submit(event: FormEvent<HTMLFormElement>): void { event.preventDefault(); mutation.mutate(); }
-  function chooseAccount(accountEmail: string): void { setEmail(accountEmail); setPassword("Demo@123"); }
+  function chooseAccount(accountEmail: string): void {
+    const publicEmails: Record<string, string> = {
+      "donor@demo.vn": "nguoituthien@charityconnect.vn",
+      "org@demo.vn": "tochuc@charityconnect.vn",
+      "admin@demo.vn": "quantri@charityconnect.vn",
+    };
+    setEmail(publicEmails[accountEmail] ?? accountEmail);
+    setPassword("Demo@123");
+  }
   return (
     <div className="container-page py-10 lg:py-16">
       <div className="mx-auto grid max-w-5xl overflow-hidden rounded-[2rem] border border-ink/10 bg-white lg:grid-cols-[.95fr_1.05fr]">

@@ -225,3 +225,99 @@ export interface TrustChainHealth {
   issues: string[];
   recommendation: string;
 }
+
+export type ContentSourceLevel = "A" | "B" | "C" | "D";
+export type ContentArticleType = "ORGANIZATION" | "TRANSPARENCY" | "ALERT" | "DATA" | "VIDEO";
+export type ContentReviewStatus = "PUBLISHED" | "PENDING_REVIEW" | "REJECTED";
+export type TrustGrade = "A" | "B" | "C" | "D" | "X";
+
+export interface ContentSource {
+  id: string;
+  name: string;
+  url: string;
+  level: ContentSourceLevel;
+  kind: "GOVERNMENT" | "PRESS" | "OFFICIAL_ORG" | "VIDEO" | "SOCIAL";
+  description: string;
+}
+
+export interface TransparencyScore {
+  total: number;
+  grade: TrustGrade;
+  source_authority: number;
+  financial_evidence: number;
+  legal_identity: number;
+  media_evidence: number;
+  freshness: number;
+  reasons: string[];
+}
+
+export interface ContentMedia {
+  type: "IMAGE" | "VIDEO";
+  url: string;
+  thumbnail_url?: string;
+  title?: string;
+  attribution?: string;
+}
+
+export interface ContentClaim {
+  label: string;
+  value: string;
+  note: string;
+}
+
+export interface ContentArticle {
+  id: string;
+  slug: string;
+  type: ContentArticleType;
+  title: string;
+  excerpt: string;
+  summary: string;
+  body: string[];
+  source: ContentSource;
+  source_url: string;
+  source_title: string;
+  source_published_at?: string;
+  collected_at: string;
+  updated_at: string;
+  image_url: string;
+  tags: string[];
+  badges: string[];
+  claims: ContentClaim[];
+  media: ContentMedia[];
+  score: TransparencyScore;
+  status: ContentReviewStatus;
+  warning_label?: "OFFICIAL_ACTION" | "OFFICIAL_WARNING" | "PRESS_WARNING" | "CHECK_SIGNALS" | "UNVERIFIED";
+}
+
+export interface ContentKpiSummary {
+  sources_total: number;
+  official_articles: number;
+  alert_cases: number;
+  evidence_rate: number;
+  live_source_rate: number;
+  updated_30d: number;
+  original_clicks: number;
+  article_count: number;
+  grade_distribution: Record<TrustGrade, number>;
+}
+
+export interface ContentHome {
+  hero: {
+    title: string;
+    subtitle: string;
+    primary_cta: string;
+    secondary_cta: string;
+  };
+  kpis: ContentKpiSummary;
+  featured: ContentArticle[];
+  alerts: ContentArticle[];
+  videos: ContentArticle[];
+  sources: ContentSource[];
+}
+
+export interface ContentArticlePage {
+  items: ContentArticle[];
+  total: number;
+  page: number;
+  page_size: number;
+}

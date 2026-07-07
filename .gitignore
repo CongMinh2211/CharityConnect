@@ -19,3 +19,10 @@ services/
 tmp/
 logs/
 artifacts/
+
+# Local helper scripts and optional demo operations
+*.bat
+*.cmd
+SET_*_KEY.ps1
+load-tests/
+observability/

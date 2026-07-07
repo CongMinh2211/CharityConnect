@@ -1,8 +1,0 @@
-apiVersion: 1
-providers:
-  - name: CharityConnect
-    folder: CharityConnect
-    type: file
-    options:
-      path: /var/lib/grafana/dashboards
-

@@ -19,11 +19,17 @@ from .knowledge import KNOWLEDGE_BASE, KNOWLEDGE_VERSION, classify_intent, fold,
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
+
+def cors_origins_from_env() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app = FastAPI(title="CharityConnect Assistant API", version="3.1.0", description="Internal-first Vietnamese assistant with cited web fallback.")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-    allow_origin_regex=r"^http://(127\.0\.0\.1|localhost):\d+$",
+    allow_origins=cors_origins_from_env(),
+    allow_origin_regex=os.getenv("CORS_ORIGIN_REGEX", r"^http://(127\.0\.0\.1|localhost):\d+$"),
     allow_methods=["POST", "GET"],
     allow_headers=["Content-Type", "Authorization"],
 )

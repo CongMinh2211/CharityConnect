@@ -174,12 +174,38 @@ Frontend có sẵn `frontend/.env.production` chỉ chứa biến public để d
 ```env
 VITE_USE_MOCK_API=true
 VITE_API_BASE_URL=/api/v1
-VITE_ASSISTANT_URL=
+VITE_ASSISTANT_URL=https://charityconnect-assistant.onrender.com
 ```
 
 API key, Gmail token, private key và các secret khác chỉ đặt trong `.env` local hoặc dashboard cloud, không commit vào Git.
 
 Nếu muốn deploy backend thật, tạo service Docker riêng cho gateway/identity/campaign/donation/assistant thay vì dùng chung root frontend image.
+
+### Deploy chatbot dùng API key thật
+
+Không đưa API key vào frontend hoặc Git. Để chatbot dùng Claude/OpenAI thật, tạo thêm một Render Web Service riêng cho Assistant:
+
+- Name: `charityconnect-assistant`
+- Runtime: Docker
+- Dockerfile Path: `backend/assistant/Dockerfile`
+- Docker Context: `backend/assistant`
+- Health Check Path: `/health`
+- Environment:
+  - `ASSISTANT_PROVIDER=anthropic`
+  - `ANTHROPIC_API_KEY=<dán key trong Render Environment, không commit>`
+  - `ANTHROPIC_MODEL=claude-sonnet-4-6`
+  - `ANTHROPIC_VERSION=2023-06-01`
+  - `ANTHROPIC_WEB_SEARCH=true`
+  - `ASSISTANT_RATE_LIMIT_PER_MINUTE=20`
+  - `CORS_ORIGINS=https://charityconnect.onrender.com,http://localhost:5173,http://127.0.0.1:5173`
+
+Sau đó frontend cần biến public:
+
+```env
+VITE_ASSISTANT_URL=https://charityconnect-assistant.onrender.com
+```
+
+Nếu đổi URL assistant trong Render/Vercel, redeploy lại frontend vì biến `VITE_*` được đóng gói lúc build.
 
 ## Tài liệu đồ án
 

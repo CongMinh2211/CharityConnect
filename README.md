@@ -159,6 +159,18 @@ Deploy Docker services trên Render, Railway hoặc VPS:
 
 Secrets phải đặt trong dashboard cloud, không commit vào Git.
 
+### Render quick fix
+
+Nếu tạo Render Web Service dạng Docker từ root repository, Render sẽ tìm `./Dockerfile`. Repo đã có root `Dockerfile` để build `frontend` và serve static trên `$PORT`.
+
+- Runtime: Docker
+- Dockerfile Path: `./Dockerfile`
+- Docker Context: `.`
+- Health Check Path: `/`
+- Env preview: `VITE_USE_MOCK_API=true`
+
+Nếu muốn deploy backend thật, tạo service Docker riêng cho gateway/identity/campaign/donation/assistant thay vì dùng chung root frontend image.
+
 ## Tài liệu đồ án
 
 Bộ tài liệu nộp CapStone được tạo trong `../outputs/CharityConnect_CapStone_Final/`, gồm Proposal, Project Plan, Backlog, User Stories, Architecture, Database Design, UI Design, Test Plan, Test Case, Sprint Backlog, Code Standard, Meeting và Reflection.

@@ -15,7 +15,7 @@ CharityConnect hiện dùng hướng **Verify + Donate**: kiểm chứng nguồn
 
 ## Nguồn dữ liệu
 
-Dữ liệu mặc định là seed đã duyệt để demo ổn định: Nuôi Em, Từ Thiện Thật, Bộ Công an, Nhân Dân, VnEconomy, Cổng Thông tin điện tử Chính phủ và VTV/VTV24.
+Dữ liệu mặc định là seed đã duyệt để bản preview chạy ổn định: Nuôi Em, Từ Thiện Thật, Bộ Công an, Nhân Dân, VnEconomy, Cổng Thông tin điện tử Chính phủ và VTV/VTV24.
 
 Hệ thống chỉ lưu tóm tắt, claim/số liệu, URL nguồn, nhãn căn cứ và ảnh minh họa local; không copy nguyên bài báo.
 

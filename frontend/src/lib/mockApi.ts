@@ -635,7 +635,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const outOfScope = ["thời tiết", "tỷ giá", "chứng khoán", "bóng đá", "phim", "nấu ăn", "du lịch"].some((term) => message.includes(term));
 
     if (outOfScope) {
-      answer = "Câu hỏi này nằm ngoài dữ liệu CharityConnect. Ở bản demo (mock) mình chỉ trả lời từ dữ liệu nội bộ; muốn tra cứu nguồn ngoài có trích dẫn, hãy chạy assistant-service (cổng 8001) và cấu hình ANTHROPIC_API_KEY hoặc OPENAI_API_KEY trong file .env.";
+      answer = "Câu hỏi này nằm ngoài dữ liệu CharityConnect. Ở chế độ dữ liệu cục bộ mình chỉ trả lời từ dữ liệu nội bộ; muốn tra cứu nguồn ngoài có trích dẫn, hãy chạy assistant-service (cổng 8001) và cấu hình ANTHROPIC_API_KEY hoặc OPENAI_API_KEY trong file .env.";
       sources = [];
       actions = [{ label: "Xem hướng dẫn", path: "/" }];
     } else if (statsQuestion) {

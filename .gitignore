@@ -20,7 +20,7 @@ tmp/
 logs/
 artifacts/
 
-# Local helper scripts and optional demo operations
+# Local helper scripts and optional preview operations
 *.bat
 *.cmd
 SET_*_KEY.ps1

@@ -169,6 +169,16 @@ Nếu tạo Render Web Service dạng Docker từ root repository, Render sẽ t
 - Health Check Path: `/`
 - Env preview: `VITE_USE_MOCK_API=true`
 
+Frontend có sẵn `frontend/.env.production` chỉ chứa biến public để deploy web tĩnh lên ngay:
+
+```env
+VITE_USE_MOCK_API=true
+VITE_API_BASE_URL=/api/v1
+VITE_ASSISTANT_URL=
+```
+
+API key, Gmail token, private key và các secret khác chỉ đặt trong `.env` local hoặc dashboard cloud, không commit vào Git.
+
 Nếu muốn deploy backend thật, tạo service Docker riêng cho gateway/identity/campaign/donation/assistant thay vì dùng chung root frontend image.
 
 ## Tài liệu đồ án

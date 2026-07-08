@@ -89,13 +89,130 @@ def test_new_charityconnect_topics_are_internal(monkeypatch, message):
 
 
 def test_external_question_without_key_does_not_hallucinate(monkeypatch):
+    main.rate_buckets.clear()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    payload = client.post("/assistant/chat", json={"message": "Thời tiết Hà Nội hôm nay?"}).json()
-    assert payload["scope"] == "EXTERNAL_WEB"
-    assert payload["searched_web"] is False
-    assert payload["sources"] == []
-    assert "OPENAI_API_KEY" in payload["answer"]
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
+    async def fake_public_external_answer(_payload):
+        return main.ChatResponse(
+            answer="Weather answer from public source.",
+            mode="DEMO",
+            scope="EXTERNAL_WEB",
+            searched_web=True,
+            sources=[main.AssistantSource(kind="WEB", title="Open-Meteo", url="https://open-meteo.com/")],
+            actions=[],
+            suggestions=[],
+        )
+
+    monkeypatch.setattr(main, "public_external_answer", fake_public_external_answer)
+    payload = client.post("/assistant/chat", json={"message": "thoi tiet Ha Noi hom nay?"}).json()
+    assert payload["scope"] == "EXTERNAL_WEB"
+    assert payload["searched_web"] is True
+    assert payload["sources"][0]["kind"] == "WEB"
+    assert "public source" in payload["answer"]
+
+
+def test_public_weather_answer_uses_open_meteo(monkeypatch):
+    class FakeResponse:
+        def __init__(self, url, data):
+            self.url = url
+            self._data = data
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def get(self, url, params=None):
+            if "geocoding-api" in url:
+                return FakeResponse(
+                    f"{url}?name=Ha+Noi",
+                    {"results": [{"name": "Ha Noi", "admin1": "Ha Noi", "country": "Viet Nam", "latitude": 21.03, "longitude": 105.85}]},
+                )
+            return FakeResponse(
+                f"{url}?latitude=21.03&longitude=105.85",
+                {
+                    "current": {"temperature_2m": 30, "apparent_temperature": 34, "relative_humidity_2m": 70, "weather_code": 61, "wind_speed_10m": 8},
+                    "daily": {"temperature_2m_max": [33], "temperature_2m_min": [26], "precipitation_sum": [5]},
+                    "current_units": {"temperature_2m": "C"},
+                    "daily_units": {"precipitation_sum": "mm"},
+                },
+            )
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    payload = main.asyncio.run(main.public_weather_answer(main.ChatRequest(message="thoi tiet Ha Noi hom nay?")))
+    assert payload is not None
+    assert payload.searched_web is True
+    assert "Ha Noi" in payload.answer
+    assert "30" in payload.answer
+    assert payload.sources[0].kind == "WEB"
+
+
+def test_public_wikipedia_answer_uses_summary(monkeypatch):
+    class FakeResponse:
+        def __init__(self, url, data):
+            self.url = url
+            self._data = data
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._data
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def get(self, url, params=None):
+            if "w/api.php" in url:
+                return FakeResponse(str(url), ["UNICEF", ["UNICEF"], [""], ["https://vi.wikipedia.org/wiki/UNICEF"]])
+            return FakeResponse(
+                str(url),
+                {"extract": "UNICEF is a public organization summary.", "content_urls": {"desktop": {"page": "https://vi.wikipedia.org/wiki/UNICEF"}}},
+            )
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    payload = main.asyncio.run(main.public_wikipedia_answer(main.ChatRequest(message="UNICEF la gi?")))
+    assert payload is not None
+    assert payload.scope == "EXTERNAL_WEB"
+    assert payload.searched_web is True
+    assert "UNICEF" in payload.answer
+    assert payload.sources[0].url == "https://vi.wikipedia.org/wiki/UNICEF"
+
+
+
+def test_public_external_helpers_cover_branches():
+    assert main.normalize_vietnamese("Da Nang") == "da nang"
+    assert main.weather_code_label(0)
+    assert main.weather_code_label(2)
+    assert main.weather_code_label(45)
+    assert main.weather_code_label(53)
+    assert main.weather_code_label(73)
+    assert main.weather_code_label(95)
+    assert main.weather_code_label(-1)
+    assert main.extract_weather_location("thoi tiet o Quy Nhon hom nay?") == "Quy Nhon"
+    assert main.extract_weather_location("thoi tiet")
+    assert main.extract_wikipedia_query("UNICEF la gi?") == "UNICEF"
+    assert main.asyncio.run(main.public_weather_answer(main.ChatRequest(message="hello"))) is None
+    assert main.asyncio.run(main.public_wikipedia_answer(main.ChatRequest(message="hi"))) is None
 
 def test_accepts_short_history_and_page_context(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

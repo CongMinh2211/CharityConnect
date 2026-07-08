@@ -563,6 +563,136 @@ async function mockDiagnostics(state: MockState) {
   };
 }
 
+type MockAssistantSource = { kind: "INTERNAL" | "WEB"; title: string; path?: string; url?: string };
+type MockAssistantAction = { label: string; path: string };
+type MockExternalAnswer = {
+  answer: string;
+  sources: MockAssistantSource[];
+  actions: MockAssistantAction[];
+  suggestions: string[];
+};
+
+function normalizeVietnamese(value: string): string {
+  return value
+    .toLocaleLowerCase("vi")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d");
+}
+
+function weatherCodeLabel(code: number): string {
+  if ([0].includes(code)) return "trời quang";
+  if ([1, 2, 3].includes(code)) return "có mây";
+  if ([45, 48].includes(code)) return "sương mù";
+  if ([51, 53, 55, 56, 57].includes(code)) return "mưa phùn";
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return "có mưa";
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return "có tuyết";
+  if ([95, 96, 99].includes(code)) return "dông";
+  return "đang cập nhật";
+}
+
+function extractWeatherLocation(message: string): string {
+  const normalized = normalizeVietnamese(message);
+  const known: Array<[string, string]> = [
+    ["da nang", "Đà Nẵng"],
+    ["ha noi", "Hà Nội"],
+    ["hanoi", "Hà Nội"],
+    ["ho chi minh", "TP. Hồ Chí Minh"],
+    ["tp hcm", "TP. Hồ Chí Minh"],
+    ["sai gon", "TP. Hồ Chí Minh"],
+    ["can tho", "Cần Thơ"],
+    ["hai phong", "Hải Phòng"],
+    ["hue", "Huế"],
+    ["nha trang", "Nha Trang"],
+    ["da lat", "Đà Lạt"],
+    ["quang nam", "Quảng Nam"],
+  ];
+  const hit = known.find(([needle]) => normalized.includes(needle));
+  if (hit) return hit[1];
+  const cleaned = message
+    .replace(/thời tiết|thoi tiet|hôm nay|hom nay|ngày mai|ngay mai|\bở\b|\bo\b|\btại\b|\btai\b|ra sao|như thế nào|nhu the nao|[?!.]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length >= 2 ? cleaned : "Đà Nẵng";
+}
+
+async function publicWeatherAnswer(message: string): Promise<MockExternalAnswer | null> {
+  if (!normalizeVietnamese(message).includes("thoi tiet")) return null;
+  const location = extractWeatherLocation(message);
+  const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1&language=vi&format=json`;
+  try {
+    const geo = await fetch(geoUrl).then((response) => response.json()) as { results?: Array<{ name: string; country?: string; latitude: number; longitude: number; admin1?: string }> };
+    const place = geo.results?.[0];
+    if (!place) throw new Error("No geocoding result");
+    const forecastUrl = `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto&forecast_days=1`;
+    const forecast = await fetch(forecastUrl).then((response) => response.json()) as {
+      current?: { temperature_2m?: number; apparent_temperature?: number; relative_humidity_2m?: number; precipitation?: number; weather_code?: number; wind_speed_10m?: number; time?: string };
+      daily?: { temperature_2m_max?: number[]; temperature_2m_min?: number[]; precipitation_sum?: number[] };
+      current_units?: Record<string, string>;
+      daily_units?: Record<string, string>;
+    };
+    const current = forecast.current ?? {};
+    const daily = forecast.daily ?? {};
+    const placeName = `${place.name}${place.admin1 ? `, ${place.admin1}` : ""}${place.country ? `, ${place.country}` : ""}`;
+    const tempUnit = forecast.current_units?.temperature_2m ?? "°C";
+    const rainUnit = forecast.daily_units?.precipitation_sum ?? "mm";
+    return {
+      answer: `Thời tiết ${placeName} hiện tại khoảng ${current.temperature_2m ?? "?"}${tempUnit}, cảm giác như ${current.apparent_temperature ?? "?"}${tempUnit}, ${weatherCodeLabel(Number(current.weather_code ?? -1))}. Độ ẩm ${current.relative_humidity_2m ?? "?"}%, gió ${current.wind_speed_10m ?? "?"} km/h. Dự báo hôm nay: cao nhất ${daily.temperature_2m_max?.[0] ?? "?"}${tempUnit}, thấp nhất ${daily.temperature_2m_min?.[0] ?? "?"}${tempUnit}, tổng mưa khoảng ${daily.precipitation_sum?.[0] ?? 0}${rainUnit}. Dữ liệu lấy từ Open‑Meteo, nên nên kiểm tra lại nếu cần quyết định đi lại quan trọng.`,
+      sources: [
+        { kind: "WEB", title: "Open-Meteo Geocoding API", url: geoUrl },
+        { kind: "WEB", title: "Open-Meteo Forecast API", url: forecastUrl },
+      ],
+      actions: [{ label: "Quay lại CharityConnect", path: "/" }],
+      suggestions: ["Xem thống kê CharityConnect", "Cảnh báo lừa đảo quyên góp", "Minh bạch TrustChain là gì?"],
+    };
+  } catch {
+    return {
+      answer: `Mình chưa lấy được thời tiết công khai cho "${location}" lúc này. Bạn có thể thử lại sau, hoặc hỏi tiếp về quyên góp, kiểm chứng nguồn và minh bạch CharityConnect.`,
+      sources: [{ kind: "WEB", title: "Open-Meteo", url: "https://open-meteo.com/" }],
+      actions: [{ label: "Xem thống kê CharityConnect", path: "/thong-ke" }],
+      suggestions: ["Xem chiến dịch", "Xác minh biên nhận", "Cảnh báo từ thiện giả"],
+    };
+  }
+}
+
+function extractWikipediaQuery(message: string): string {
+  const cleaned = message
+    .replace(/là gì|la gi|ai là|ai la|ở đâu|o dau|cho tôi biết|cho toi biet|tìm hiểu về|tim hieu ve|thông tin về|thong tin ve|[?!.]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length >= 3 ? cleaned : message.trim();
+}
+
+async function publicWikipediaAnswer(message: string): Promise<MockExternalAnswer | null> {
+  const normalized = normalizeVietnamese(message);
+  if (normalized.includes("thoi tiet") || normalized.length < 8) return null;
+  if (!/(la gi|ai la|o dau|thong tin ve|tim hieu ve)/.test(normalized)) return null;
+  const query = extractWikipediaQuery(message);
+  const searchUrl = `https://vi.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=1&namespace=0&format=json&origin=*`;
+  try {
+    const search = await fetch(searchUrl).then((response) => response.json()) as [string, string[], string[], string[]];
+    const title = search[1]?.[0];
+    const url = search[3]?.[0];
+    if (!title) return null;
+    const summaryUrl = `https://vi.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const summary = await fetch(summaryUrl).then((response) => response.json()) as { extract?: string; content_urls?: { desktop?: { page?: string } } };
+    const extract = summary.extract?.trim();
+    if (!extract) return null;
+    return {
+      answer: `${title}: ${extract.slice(0, 520)}${extract.length > 520 ? "..." : ""}\n\nĐây là thông tin nguồn ngoài, không phải dữ liệu CharityConnect. Với nội dung quan trọng, bạn nên mở nguồn để kiểm chứng thêm.`,
+      sources: [{ kind: "WEB", title: `Wikipedia tiếng Việt: ${title}`, url: summary.content_urls?.desktop?.page ?? url ?? summaryUrl }],
+      actions: [{ label: "Quay lại CharityConnect", path: "/" }],
+      suggestions: ["Kiểm chứng nguồn từ thiện", "Xem cảnh báo lừa đảo", "Xem sổ cái minh bạch"],
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function publicExternalAnswer(message: string): Promise<MockExternalAnswer | null> {
+  return await publicWeatherAnswer(message) ?? await publicWikipediaAnswer(message);
+}
+
 export async function mockApi<T>(path: string, options: RequestInit = {}): Promise<T> {
   await new Promise((resolve) => window.setTimeout(resolve, 140));
   const state = loadState();
@@ -623,6 +753,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
 
   if (pathname === "/assistant/chat" && method === "POST") {
     const message = String(body.message ?? "").toLocaleLowerCase("vi");
+    const normalizedMessage = normalizeVietnamese(String(body.message ?? ""));
     const vnd = (value: number): string => new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(value);
     let answer = "Mình có thể hướng dẫn quyên góp, xác minh biên nhận, xem sổ cái minh bạch, kiểm chứng nguồn từ thiện hoặc tóm tắt thống kê. Bạn cần phần nào?";
     let sources: Array<{ kind: "INTERNAL" | "WEB"; title: string; path?: string; url?: string }> = [{ kind: "INTERNAL", title: "Hướng dẫn sử dụng CharityConnect", path: "/" }];
@@ -632,12 +763,20 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const statsQuestion = ["thống kê", "tóm tắt", "bao nhiêu tiền", "tổng quyên góp", "số liệu", "báo cáo tài chính", "số dư"].some((term) => message.includes(term));
     const alertQuestion = ["cảnh báo", "lừa đảo", "từ thiện giả", "giả mạo", "sai phạm"].some((term) => message.includes(term));
     const verifyQuestion = ["kiểm chứng", "nguồn chính thống", "nuôi em", "kpi", "minh bạch nguồn", "điểm minh bạch"].some((term) => message.includes(term));
-    const outOfScope = ["thời tiết", "tỷ giá", "chứng khoán", "bóng đá", "phim", "nấu ăn", "du lịch"].some((term) => message.includes(term));
+    const outOfScope = ["thoi tiet", "ty gia", "chung khoan", "bong da", "phim", "nau an", "du lich"].some((term) => normalizedMessage.includes(term));
+    const externalInfoQuestion = /(la gi|ai la|o dau|thong tin ve|tim hieu ve)/.test(normalizedMessage) && !["charityconnect", "trustchain", "quyen gop", "ung ho", "chien dich", "minh bach", "bien nhan", "so cai", "ledger", "hash", "tu thien", "canh bao", "kpi"].some((term) => normalizedMessage.includes(term));
 
-    if (outOfScope) {
-      answer = "Câu hỏi này nằm ngoài dữ liệu CharityConnect. Ở chế độ dữ liệu cục bộ mình chỉ trả lời từ dữ liệu nội bộ; muốn tra cứu nguồn ngoài có trích dẫn, hãy chạy assistant-service (cổng 8001) và cấu hình ANTHROPIC_API_KEY hoặc OPENAI_API_KEY trong file .env.";
-      sources = [];
+    const externalFallback = (outOfScope || externalInfoQuestion) ? await publicExternalAnswer(String(body.message ?? "")) : null;
+    if (externalFallback) {
+      answer = externalFallback.answer;
+      sources = externalFallback.sources;
+      actions = externalFallback.actions;
+      suggestions = externalFallback.suggestions;
+    } else if (outOfScope || externalInfoQuestion) {
+      answer = "Câu hỏi này nằm ngoài dữ liệu CharityConnect và mình chưa tìm được nguồn công khai phù hợp trong chế độ web tĩnh. Bạn có thể hỏi thời tiết theo tỉnh/thành, hỏi khái niệm dạng “... là gì”, hoặc quay lại các nội dung kiểm chứng nguồn, thống kê, cảnh báo và minh bạch quyên góp.";
+      sources = [{ kind: "WEB", title: "Chưa có nguồn công khai phù hợp cho câu hỏi này" }];
       actions = [{ label: "Xem hướng dẫn", path: "/" }];
+      suggestions = ["Thời tiết Đà Nẵng hôm nay", "UNICEF là gì?", "Cảnh báo lừa đảo quyên góp"];
     } else if (statsQuestion) {
       const analytics = donationAnalytics(state, "all", state.donations);
       const totals = analytics.totals;
@@ -679,8 +818,8 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     return {
       answer,
       mode: "DEMO",
-      scope: outOfScope ? "EXTERNAL_WEB" : "INTERNAL",
-      searched_web: false,
+      scope: (outOfScope || externalInfoQuestion) ? "EXTERNAL_WEB" : "INTERNAL",
+      searched_web: Boolean(externalFallback),
       knowledge_version: "charityconnect-2026.07",
       sources,
       actions,

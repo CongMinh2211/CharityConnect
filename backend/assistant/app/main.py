@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Literal
@@ -624,6 +625,184 @@ async def assistant_role_guide(role: RoleGuideRole = "PUBLIC", path: str = "/") 
     return RoleGuideResponse(**guide)
 
 
+def normalize_vietnamese(value: str) -> str:
+    value = value.casefold().replace("đ", "d").replace("Đ", "d")
+    decomposed = unicodedata.normalize("NFD", value)
+    return "".join(ch for ch in decomposed if unicodedata.category(ch) != "Mn")
+
+
+def weather_code_label(code: int) -> str:
+    if code == 0:
+        return "trời quang"
+    if code in {1, 2, 3}:
+        return "có mây"
+    if code in {45, 48}:
+        return "sương mù"
+    if code in {51, 53, 55, 56, 57}:
+        return "mưa phùn"
+    if code in {61, 63, 65, 66, 67, 80, 81, 82}:
+        return "có mưa"
+    if code in {71, 73, 75, 77, 85, 86}:
+        return "có tuyết"
+    if code in {95, 96, 99}:
+        return "dông"
+    return "đang cập nhật"
+
+
+def extract_weather_location(message: str) -> str:
+    normalized = normalize_vietnamese(message)
+    known = [
+        ("da nang", "Đà Nẵng"),
+        ("ha noi", "Hà Nội"),
+        ("hanoi", "Hà Nội"),
+        ("ho chi minh", "TP. Hồ Chí Minh"),
+        ("tp hcm", "TP. Hồ Chí Minh"),
+        ("sai gon", "TP. Hồ Chí Minh"),
+        ("can tho", "Cần Thơ"),
+        ("hai phong", "Hải Phòng"),
+        ("hue", "Huế"),
+        ("nha trang", "Nha Trang"),
+        ("da lat", "Đà Lạt"),
+        ("quang nam", "Quảng Nam"),
+    ]
+    for needle, label in known:
+        if needle in normalized:
+            return label
+    cleaned = re.sub(
+        r"thời tiết|thoi tiet|hôm nay|hom nay|ngày mai|ngay mai|\bở\b|\bo\b|\btại\b|\btai\b|ra sao|như thế nào|nhu the nao|[?!.]",
+        " ",
+        message,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned if len(cleaned) >= 2 else "Đà Nẵng"
+
+
+async def public_weather_answer(payload: ChatRequest) -> ChatResponse | None:
+    if "thoi tiet" not in normalize_vietnamese(payload.message):
+        return None
+    location = extract_weather_location(payload.message)
+    geo_url = "https://geocoding-api.open-meteo.com/v1/search"
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            geo_response = await client.get(geo_url, params={"name": location, "count": 1, "language": "vi", "format": "json"})
+            geo_response.raise_for_status()
+            geo = geo_response.json()
+            place = (geo.get("results") or [None])[0]
+            if not place:
+                raise RuntimeError("no geocoding result")
+            forecast_url = "https://api.open-meteo.com/v1/forecast"
+            params = {
+                "latitude": place["latitude"],
+                "longitude": place["longitude"],
+                "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
+                "timezone": "auto",
+                "forecast_days": 1,
+            }
+            forecast_response = await client.get(forecast_url, params=params)
+            forecast_response.raise_for_status()
+            forecast = forecast_response.json()
+    except Exception:
+        return ChatResponse(
+            answer=f'Mình chưa lấy được thời tiết công khai cho "{location}" lúc này. Bạn có thể thử lại sau, hoặc hỏi tiếp về quyên góp, kiểm chứng nguồn và minh bạch CharityConnect.',
+            mode="DEMO",
+            scope="EXTERNAL_WEB",
+            searched_web=True,
+            sources=[AssistantSource(kind="WEB", title="Open-Meteo", url="https://open-meteo.com/")],
+            actions=[AssistantAction(label="Xem thống kê CharityConnect", path="/thong-ke")],
+            suggestions=["Xem chiến dịch", "Xác minh biên nhận", "Cảnh báo từ thiện giả"],
+        )
+
+    current = forecast.get("current") or {}
+    daily = forecast.get("daily") or {}
+    current_units = forecast.get("current_units") or {}
+    daily_units = forecast.get("daily_units") or {}
+    place_name = ", ".join(part for part in [place.get("name"), place.get("admin1"), place.get("country")] if part)
+    temp_unit = current_units.get("temperature_2m", "°C")
+    rain_unit = daily_units.get("precipitation_sum", "mm")
+    forecast_full_url = str(forecast_response.url)
+    answer = (
+        f"Thời tiết {place_name} hiện tại khoảng {current.get('temperature_2m', '?')}{temp_unit}, "
+        f"cảm giác như {current.get('apparent_temperature', '?')}{temp_unit}, "
+        f"{weather_code_label(int(current.get('weather_code', -1)))}. "
+        f"Độ ẩm {current.get('relative_humidity_2m', '?')}%, gió {current.get('wind_speed_10m', '?')} km/h. "
+        f"Dự báo hôm nay: cao nhất {(daily.get('temperature_2m_max') or ['?'])[0]}{temp_unit}, "
+        f"thấp nhất {(daily.get('temperature_2m_min') or ['?'])[0]}{temp_unit}, "
+        f"tổng mưa khoảng {(daily.get('precipitation_sum') or [0])[0]}{rain_unit}. "
+        "Dữ liệu lấy từ Open‑Meteo, nên nên kiểm tra lại nếu cần quyết định đi lại quan trọng."
+    )
+    return ChatResponse(
+        answer=answer,
+        mode="DEMO",
+        scope="EXTERNAL_WEB",
+        searched_web=True,
+        sources=[
+            AssistantSource(kind="WEB", title="Open-Meteo Geocoding API", url=str(geo_response.url)),
+            AssistantSource(kind="WEB", title="Open-Meteo Forecast API", url=forecast_full_url),
+        ],
+        actions=[AssistantAction(label="Quay lại CharityConnect", path="/")],
+        suggestions=["Xem thống kê CharityConnect", "Cảnh báo lừa đảo quyên góp", "Minh bạch TrustChain là gì?"],
+    )
+
+
+def extract_wikipedia_query(message: str) -> str:
+    cleaned = re.sub(
+        r"là gì|la gi|ai là|ai la|ở đâu|o dau|cho tôi biết|cho toi biet|tìm hiểu về|tim hieu ve|thông tin về|thong tin ve|[?!.]",
+        " ",
+        message,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned if len(cleaned) >= 3 else message.strip()
+
+
+async def public_wikipedia_answer(payload: ChatRequest) -> ChatResponse | None:
+    normalized = normalize_vietnamese(payload.message)
+    if "thoi tiet" in normalized or len(normalized) < 8:
+        return None
+    if not re.search(r"la gi|ai la|o dau|thong tin ve|tim hieu ve", normalized):
+        return None
+    query = extract_wikipedia_query(payload.message)
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            search_response = await client.get(
+                "https://vi.wikipedia.org/w/api.php",
+                params={"action": "opensearch", "search": query, "limit": 1, "namespace": 0, "format": "json", "origin": "*"},
+            )
+            search_response.raise_for_status()
+            search = search_response.json()
+            title = (search[1] or [None])[0]
+            url = (search[3] or [None])[0]
+            if not title:
+                return None
+            summary_response = await client.get(f"https://vi.wikipedia.org/api/rest_v1/page/summary/{title}")
+            summary_response.raise_for_status()
+            summary = summary_response.json()
+    except Exception:
+        return None
+    extract = (summary.get("extract") or "").strip()
+    if not extract:
+        return None
+    answer = (
+        f"{title}: {extract[:520]}{'...' if len(extract) > 520 else ''}\n\n"
+        "Đây là thông tin nguồn ngoài, không phải dữ liệu CharityConnect. Với nội dung quan trọng, bạn nên mở nguồn để kiểm chứng thêm."
+    )
+    return ChatResponse(
+        answer=answer,
+        mode="DEMO",
+        scope="EXTERNAL_WEB",
+        searched_web=True,
+        sources=[AssistantSource(kind="WEB", title=f"Wikipedia tiếng Việt: {title}", url=(((summary.get("content_urls") or {}).get("desktop") or {}).get("page") or url or str(summary_response.url)))],
+        actions=[AssistantAction(label="Quay lại CharityConnect", path="/")],
+        suggestions=["Kiểm chứng nguồn từ thiện", "Xem cảnh báo lừa đảo", "Xem sổ cái minh bạch"],
+    )
+
+
+async def public_external_answer(payload: ChatRequest) -> ChatResponse | None:
+    return await public_weather_answer(payload) or await public_wikipedia_answer(payload)
+
+
 @app.post("/assistant/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     enforce_rate_limit(request.client.host if request.client else "unknown")
@@ -659,12 +838,21 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             return ChatResponse(answer=safe_answer(answer), mode="ANTHROPIC", scope="EXTERNAL_WEB", searched_web=True, sources=sources, actions=[], suggestions=["Hỏi tiếp về chủ đề này", "Quay lại CharityConnect"])
         except Exception:
             if not os.getenv("OPENAI_API_KEY"):
-                return ChatResponse(answer="Mình chưa thể hoàn tất tra cứu nguồn ngoài qua Claude lúc này. Vui lòng kiểm tra ANTHROPIC_API_KEY, quyền web search hoặc thử lại sau.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về CharityConnect"])
+                public_reply = await public_external_answer(payload)
+                if public_reply:
+                    return public_reply
+                return ChatResponse(answer="Mình chưa thể hoàn tất tra cứu nguồn ngoài qua Claude lúc này. Bạn vẫn có thể hỏi thời tiết theo tỉnh/thành, hỏi khái niệm dạng “... là gì”, hoặc quay lại dữ liệu CharityConnect.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về CharityConnect"])
     if not os.getenv("OPENAI_API_KEY"):
-        return ChatResponse(answer="Câu hỏi này nằm ngoài dữ liệu CharityConnect. Phần tra cứu nguồn ngoài cần cấu hình ANTHROPIC_API_KEY hoặc OPENAI_API_KEY trong .env để dùng web search có trích dẫn URL, nên mình chưa thể tra cứu lúc này.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về quyên góp", "Xem thống kê", "Xác minh biên nhận"])
+        public_reply = await public_external_answer(payload)
+        if public_reply:
+            return public_reply
+        return ChatResponse(answer="Câu hỏi này nằm ngoài dữ liệu CharityConnect và mình chưa tìm được nguồn công khai phù hợp. Bạn có thể hỏi thời tiết theo tỉnh/thành, hỏi khái niệm dạng “... là gì”, hoặc quay lại các nội dung kiểm chứng nguồn, thống kê, cảnh báo và minh bạch quyên góp.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về quyên góp", "Xem thống kê", "Xác minh biên nhận"])
     try:
         answer, sources = await asyncio.wait_for(asyncio.to_thread(web_answer, payload), timeout=25)
         if not sources: raise RuntimeError("web search returned no citations")
         return ChatResponse(answer=safe_answer(answer), mode="OPENAI", scope="EXTERNAL_WEB", searched_web=True, sources=sources, actions=[], suggestions=["Hỏi tiếp về chủ đề này", "Quay lại CharityConnect"])
     except Exception:
+        public_reply = await public_external_answer(payload)
+        if public_reply:
+            return public_reply
         return ChatResponse(answer="Mình chưa thể hoàn tất tra cứu nguồn ngoài lúc này. Vui lòng thử lại sau.", mode="DEMO", scope="EXTERNAL_WEB", searched_web=False, sources=[], actions=[], suggestions=["Hỏi về CharityConnect"])

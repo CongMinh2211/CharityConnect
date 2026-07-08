@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AccountSession, AccountUser, AssistantResponse, AuthPayload, Campaign, CampaignEscrow, Donation, DonationAnalytics, FinancialPlan, ImpactReport, LedgerAnchor, LedgerEntry, LedgerVerification, PublicReceiptProof, RoleGuideResponse, MerkleProofExport, TrustChainHealth, User } from "../types";
 import { mockApi, resetMockData, sha256Fallback } from "./mockApi";
 
@@ -47,6 +47,59 @@ describe("mock API demo flows", () => {
     const guide = await mockApi<RoleGuideResponse>("/assistant/role-guide?role=DONOR&path=/lich-su");
     expect(guide.sections.some((section) => section.title === "Người quyên góp")).toBe(true);
     expect(guide.locked_actions.some((action) => action.path.includes("/quan-tri"))).toBe(true);
+  });
+
+  it("answers external weather with public sources in static mode", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return {
+        json: async () => url.includes("geocoding-api")
+          ? { results: [{ name: "Da Nang", admin1: "Da Nang", country: "Viet Nam", latitude: 16.07, longitude: 108.22 }] }
+          : {
+              current: { temperature_2m: 29, apparent_temperature: 33, relative_humidity_2m: 75, weather_code: 61, wind_speed_10m: 10 },
+              daily: { temperature_2m_max: [32], temperature_2m_min: [25], precipitation_sum: [4] },
+              current_units: { temperature_2m: "°C" },
+              daily_units: { precipitation_sum: "mm" }
+            }
+      } as Response;
+    }) as unknown as typeof fetch;
+    try {
+      const result = await mockApi<AssistantResponse>("/assistant/chat", {
+        method: "POST",
+        body: JSON.stringify({ message: "thoi tiet Da Nang hom nay" })
+      });
+      expect(result.scope).toBe("EXTERNAL_WEB");
+      expect(result.searched_web).toBe(true);
+      expect(result.answer).toContain("Da Nang");
+      expect(result.sources.some((source) => source.kind === "WEB")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("answers external encyclopedia questions with a public source", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      return {
+        json: async () => url.includes("opensearch")
+          ? ["UNICEF", ["UNICEF"], [""], ["https://vi.wikipedia.org/wiki/UNICEF"]]
+          : { extract: "UNICEF là Quỹ Nhi đồng Liên Hợp Quốc.", content_urls: { desktop: { page: "https://vi.wikipedia.org/wiki/UNICEF" } } }
+      } as Response;
+    }) as unknown as typeof fetch;
+    try {
+      const result = await mockApi<AssistantResponse>("/assistant/chat", {
+        method: "POST",
+        body: JSON.stringify({ message: "UNICEF la gi" })
+      });
+      expect(result.scope).toBe("EXTERNAL_WEB");
+      expect(result.searched_web).toBe(true);
+      expect(result.answer).toContain("UNICEF");
+      expect(result.sources[0].url).toContain("wikipedia.org");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("migrates an older mock state that has no ledger", async () => {

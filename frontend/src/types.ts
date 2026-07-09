@@ -171,7 +171,7 @@ export interface CampaignAnalytics {
   period: AnalyticsPeriod; as_of: string;
   totals: { campaign_count: number; active_count: number; closed_count: number; pending_count: number; goal_amount: number; raised_amount: number };
   category_distribution: Array<{ category: string; campaign_count: number; raised_amount: number }>;
-  campaign_progress: Array<{ id: string; title: string; category: string; goal_amount: number; raised_amount: number; status: CampaignStatus; progress_percent: number }>;
+  campaign_progress: Array<{ id: string; title: string; category: string; goal_amount: number; raised_amount: number; used_amount?: number; transparent_balance?: number; status: CampaignStatus; progress_percent: number }>;
 }
 export interface UserAnalytics { as_of: string; totals: { donor_count: number; verified_organization_count: number } }
 

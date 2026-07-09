@@ -483,11 +483,26 @@ function donationAnalytics(state: MockState, period: AnalyticsPeriod, donations:
 
 function campaignAnalytics(state: MockState, period: AnalyticsPeriod, organizationId?: string): CampaignAnalytics {
   const campaigns = (organizationId ? state.campaigns.filter((item) => item.organization_id === organizationId) : state.campaigns).filter((item) => !item.deleted_at);
+  const campaignIds = new Set(campaigns.map((item) => item.id));
+  const completedDonations = state.donations.filter((item) => item.status === "COMPLETED" && campaignIds.has(item.campaign_id));
+  const raisedByCampaign = new Map<string, number>();
+  for (const donation of completedDonations) {
+    raisedByCampaign.set(donation.campaign_id, (raisedByCampaign.get(donation.campaign_id) ?? 0) + donation.amount);
+  }
+  const verifiedUsageByCampaign = new Map<string, number>();
+  for (const report of state.impactReports.filter((item) => item.status === "VERIFIED" && !item.deleted_at && campaignIds.has(item.campaign_id))) {
+    verifiedUsageByCampaign.set(report.campaign_id, (verifiedUsageByCampaign.get(report.campaign_id) ?? 0) + report.amount_used);
+  }
+  const raisedAmount = campaigns.reduce((sum, item) => sum + (raisedByCampaign.get(item.id) ?? 0), 0);
   return {
     period, as_of: new Date().toISOString(),
-    totals: { campaign_count: campaigns.length, active_count: campaigns.filter((item) => item.status === "APPROVED" && new Date(item.end_date).getTime() > Date.now()).length, closed_count: campaigns.filter((item) => item.status === "CLOSED" || new Date(item.end_date).getTime() <= Date.now()).length, pending_count: campaigns.filter((item) => item.status === "PENDING_REVIEW").length, goal_amount: campaigns.reduce((sum, item) => sum + item.goal_amount, 0), raised_amount: campaigns.reduce((sum, item) => sum + item.raised_amount, 0) },
-    category_distribution: [...new Set(campaigns.map((item) => item.category))].map((category) => ({ category, campaign_count: campaigns.filter((item) => item.category === category).length, raised_amount: campaigns.filter((item) => item.category === category).reduce((sum, item) => sum + item.raised_amount, 0) })),
-    campaign_progress: [...campaigns].sort((a, b) => b.raised_amount - a.raised_amount).slice(0, 8).map((item) => ({ id: item.id, title: item.title, category: item.category, goal_amount: item.goal_amount, raised_amount: item.raised_amount, status: item.status, progress_percent: Math.min(100, Math.round(item.raised_amount * 1000 / item.goal_amount) / 10) })),
+    totals: { campaign_count: campaigns.length, active_count: campaigns.filter((item) => item.status === "APPROVED" && new Date(item.end_date).getTime() > Date.now()).length, closed_count: campaigns.filter((item) => item.status === "CLOSED" || new Date(item.end_date).getTime() <= Date.now()).length, pending_count: campaigns.filter((item) => item.status === "PENDING_REVIEW").length, goal_amount: campaigns.reduce((sum, item) => sum + item.goal_amount, 0), raised_amount: raisedAmount },
+    category_distribution: [...new Set(campaigns.map((item) => item.category))].map((category) => ({ category, campaign_count: campaigns.filter((item) => item.category === category).length, raised_amount: campaigns.filter((item) => item.category === category).reduce((sum, item) => sum + (raisedByCampaign.get(item.id) ?? 0), 0) })),
+    campaign_progress: [...campaigns].sort((a, b) => (raisedByCampaign.get(b.id) ?? 0) - (raisedByCampaign.get(a.id) ?? 0)).slice(0, 8).map((item) => {
+      const raised = raisedByCampaign.get(item.id) ?? 0;
+      const used = verifiedUsageByCampaign.get(item.id) ?? 0;
+      return { id: item.id, title: item.title, category: item.category, goal_amount: item.goal_amount, raised_amount: raised, used_amount: used, transparent_balance: Math.max(0, raised - used), status: item.status, progress_percent: item.goal_amount > 0 ? Math.min(100, Math.round(raised * 1000 / item.goal_amount) / 10) : 0 };
+    }),
   };
 }
 

@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, Link2, Loader2, ScanSearch, ShieldAlert, S
 import { useState } from "react";
 import { analyzeSource } from "../../lib/api";
 import type { SourceAnalysis, SourceVerdict } from "../../types";
+import { ScoreBreakdown } from "./TransparencyScore";
 
 const VERDICT: Record<SourceVerdict, { label: string; tone: string; icon: typeof ShieldCheck }> = {
   TRUSTED: { label: "Đáng tin", tone: "bg-brand-100 text-brand-800 border-brand-300", icon: ShieldCheck },
@@ -117,23 +118,8 @@ function AnalysisResult({ result }: { result: SourceAnalysis }): JSX.Element {
 
       <div className="card p-5">
         <p className="font-black">Chi tiết chấm điểm minh bạch</p>
-        <div className="mt-3 space-y-2">
-          <ScoreRow label="Nguồn chính thống" value={result.score.source_authority} max={30} />
-          <ScoreRow label="Tài chính / sao kê" value={result.score.financial_evidence} max={25} />
-          <ScoreRow label="Pháp lý / đại diện" value={result.score.legal_identity} max={20} />
-          <ScoreRow label="Ảnh / video" value={result.score.media_evidence} max={15} />
-          <ScoreRow label="Độ mới" value={result.score.freshness} max={10} />
-        </div>
+        <div className="mt-3"><ScoreBreakdown score={result.score} variant="light" /></div>
       </div>
-    </div>
-  );
-}
-
-function ScoreRow({ label, value, max }: { label: string; value: number; max: number }): JSX.Element {
-  return (
-    <div>
-      <div className="mb-1 flex justify-between text-xs font-bold text-slate-500"><span>{label}</span><span>{value}/{max}</span></div>
-      <div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.round((value / max) * 100)}%` }} /></div>
     </div>
   );
 }

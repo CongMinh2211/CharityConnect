@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import type { ContentMetric, RealProject } from "../../types";
 import { gradeClass } from "./ContentCard";
+import { ScoreBreakdown } from "./TransparencyScore";
 
 export function RealProjectDetailPage(): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
@@ -56,13 +57,7 @@ export function RealProjectDetailPage(): JSX.Element {
               <span className="text-6xl font-black tracking-[-.06em]">{project.score.grade}</span>
               <span className={`mb-2 rounded-full px-3 py-1 text-sm font-black ${gradeClass(project.score.grade)}`}>{project.score.total}/100</span>
             </div>
-            <div className="mt-5 space-y-3">
-              <ScoreLine label="Nguồn chính thống" value={project.score.source_authority} max={30} />
-              <ScoreLine label="Tài chính/sao kê" value={project.score.financial_evidence} max={25} />
-              <ScoreLine label="Pháp lý/đại diện" value={project.score.legal_identity} max={20} />
-              <ScoreLine label="Ảnh/video" value={project.score.media_evidence} max={15} />
-              <ScoreLine label="Độ mới" value={project.score.freshness} max={10} />
-            </div>
+            <div className="mt-5"><ScoreBreakdown score={project.score} variant="dark" /></div>
           </div>
 
           <div className="card p-6">
@@ -93,15 +88,6 @@ function MetricBlock({ metric }: { metric: ContentMetric }): JSX.Element {
       <p className="text-xs font-black uppercase tracking-[.12em] text-brand-700">{metric.label}</p>
       <p className="mt-2 text-2xl font-black text-ink">{metric.display_value}</p>
       <p className="mt-2 text-xs text-slate-500">Nguồn: {metric.source_name} · cấp {metric.confidence_level}</p>
-    </div>
-  );
-}
-
-function ScoreLine({ label, value, max }: { label: string; value: number; max: number }): JSX.Element {
-  return (
-    <div>
-      <div className="mb-1 flex justify-between text-xs font-bold text-white/70"><span>{label}</span><span>{value}/{max}</span></div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/15"><div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.round((value / max) * 100)}%` }} /></div>
     </div>
   );
 }

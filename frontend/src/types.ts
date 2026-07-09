@@ -338,6 +338,7 @@ export interface ContentStatistics {
   alert_cases: number;
   total_reported_amount: number;
   total_reported_beneficiaries: number;
+  total_need_context: number;
   updated_at: string;
   grade_distribution: Record<TrustGrade, number>;
 }

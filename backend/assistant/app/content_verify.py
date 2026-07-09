@@ -347,7 +347,9 @@ def statistics() -> dict[str, Any]:
     metrics = [metric for metric in METRICS if metric["id"] in used_metric_ids]
     official_metrics = [metric for metric in metrics if metric["confidence_level"] in {"A", "B"}]
     total_amount = sum(metric["numeric_value"] for metric in metrics if metric["unit"] == "VND" and metric["metric_type"] == "SUPPORT_AMOUNT")
-    total_beneficiaries = sum(metric["numeric_value"] for metric in metrics if metric["unit"] == "PEOPLE" and metric["metric_type"] in {"BENEFICIARY", "SOURCE_STATISTIC"})
+    # Người ĐƯỢC hỗ trợ: chỉ beneficiary thật; số liệu nhu cầu (SOURCE_STATISTIC) tách riêng để không thổi phồng.
+    total_beneficiaries = sum(metric["numeric_value"] for metric in metrics if metric["unit"] == "PEOPLE" and metric["metric_type"] == "BENEFICIARY")
+    total_need_context = sum(metric["numeric_value"] for metric in metrics if metric["unit"] == "PEOPLE" and metric["metric_type"] == "SOURCE_STATISTIC")
     distribution = {grade: 0 for grade in ["A", "B", "C", "D", "X"]}
     for project in published_projects:
         distribution[project["score"]["grade"]] += 1
@@ -359,6 +361,7 @@ def statistics() -> dict[str, Any]:
         "alert_cases": len([item for item in ARTICLES if item["status"] == "PUBLISHED" and item["type"] in {"ALERT", "SCAM_ALERT"}]),
         "total_reported_amount": total_amount,
         "total_reported_beneficiaries": total_beneficiaries,
+        "total_need_context": total_need_context,
         "updated_at": NOW,
         "grade_distribution": distribution,
     }

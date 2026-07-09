@@ -115,9 +115,11 @@ export function VerifyHomePage(): JSX.Element {
           />
           <SummaryCard
             icon={<Users size={24} />}
-            label="Người hưởng lợi / nhu cầu"
+            label="Người được hỗ trợ (công bố)"
             value={statistics ? compactNumber.format(statistics.total_reported_beneficiaries) : "Đang cập nhật"}
-            note="Tổng từ claim người hưởng lợi và số liệu nền."
+            note={statistics && statistics.total_need_context > 0
+              ? `Chỉ tính người/trẻ được hỗ trợ theo công bố. Bối cảnh nhu cầu: ${compactNumber.format(statistics.total_need_context)} trẻ cần hỗ trợ.`
+              : "Chỉ tính người/trẻ được hỗ trợ theo nguồn công bố (gồm mục tiêu)."}
           />
           <SummaryCard
             icon={<AlertTriangle size={24} />}
@@ -180,8 +182,8 @@ export function VerifyHomePage(): JSX.Element {
       </section>
 
       <section className="container-page py-14">
-        <div className="grid gap-8 lg:grid-cols-[1.1fr_.9fr]">
-          <div className="card overflow-hidden">
+        <div className="grid min-w-0 gap-8 lg:grid-cols-[1.1fr_.9fr]">
+          <div className="card min-w-0 overflow-hidden">
             {videos[0] && youtubeEmbedUrl(videos[0].source_url) ? (
               <iframe
                 className="aspect-video w-full border-0"
@@ -207,7 +209,7 @@ export function VerifyHomePage(): JSX.Element {
               <p className="mt-3 leading-7 text-slate-600">{videos[0]?.summary ?? "Mở nguồn gốc để xem thêm bản tin chính thống."}</p>
             </div>
           </div>
-          <div className="rounded-[2rem] bg-sage-100 p-6">
+          <div className="min-w-0 rounded-[2rem] bg-sage-100 p-6">
             <p className="text-sm font-black uppercase tracking-[.15em] text-brand-700">Nguồn đang theo dõi</p>
             <div className="mt-5 space-y-3">
               {sources.map((source) => (

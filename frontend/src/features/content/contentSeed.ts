@@ -540,8 +540,13 @@ function buildStatistics(): ContentStatistics {
   const totalReportedAmount = metrics
     .filter((metric) => metric.unit === "VND" && metric.metric_type === "SUPPORT_AMOUNT")
     .reduce((sum, metric) => sum + metric.numeric_value, 0);
+  // Người ĐƯỢC hỗ trợ: chỉ tính beneficiary thật (đơn vị người), KHÔNG gộp số liệu nhu cầu (trẻ cần hỗ trợ).
   const totalReportedBeneficiaries = metrics
-    .filter((metric) => metric.unit === "PEOPLE" && (metric.metric_type === "BENEFICIARY" || metric.metric_type === "SOURCE_STATISTIC"))
+    .filter((metric) => metric.unit === "PEOPLE" && metric.metric_type === "BENEFICIARY")
+    .reduce((sum, metric) => sum + metric.numeric_value, 0);
+  // Bối cảnh nhu cầu: số người/trẻ CẦN hỗ trợ theo thống kê nền (tách riêng để không nhầm với người được hỗ trợ).
+  const totalNeedContext = metrics
+    .filter((metric) => metric.unit === "PEOPLE" && metric.metric_type === "SOURCE_STATISTIC")
     .reduce((sum, metric) => sum + metric.numeric_value, 0);
 
   return {
@@ -552,6 +557,7 @@ function buildStatistics(): ContentStatistics {
     alert_cases: contentArticles.filter((article) => article.status === "PUBLISHED" && (article.type === "ALERT" || article.type === "SCAM_ALERT")).length,
     total_reported_amount: totalReportedAmount,
     total_reported_beneficiaries: totalReportedBeneficiaries,
+    total_need_context: totalNeedContext,
     updated_at: NOW,
     grade_distribution: publishedProjects.reduce<Record<TrustGrade, number>>((acc, project) => {
       acc[project.score.grade] += 1;

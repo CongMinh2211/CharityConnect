@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ExternalLink, FileCheck2, Gauge, Landmark, ListChecks, Mail, ShieldCheck, UserRoundCheck, Users, X } from "lucide-react";
+import { ArrowRight, Building2, ExternalLink, FileCheck2, Gauge, Landmark, ListChecks, Mail, ShieldCheck, UserRoundCheck, Users, X } from "lucide-react";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge";
@@ -15,10 +15,11 @@ interface OrganizationReview {
   description: string;
 }
 
-type Tab = "queue" | "users" | "risk" | "audit" | "trustchain";
+type Tab = "queue" | "organizations" | "users" | "risk" | "audit" | "trustchain";
 
 const tabs: Array<{ id: Tab; label: string; icon: typeof ShieldCheck }> = [
   { id: "queue", label: "Hàng đợi", icon: ShieldCheck },
+  { id: "organizations", label: "Tổ chức", icon: Building2 },
   { id: "users", label: "Tài khoản", icon: Users },
   { id: "risk", label: "Risk Score", icon: Gauge },
   { id: "audit", label: "Audit Log", icon: ListChecks },
@@ -32,6 +33,7 @@ export function AdminPage(): JSX.Element {
   const tab = (params.get("tab") as Tab) || "queue";
 
   const organizations = useQuery({ queryKey: ["admin-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations?status=PENDING") });
+  const allOrganizations = useQuery({ queryKey: ["admin-all-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations"), enabled: tab === "organizations" });
   const campaigns = useQuery({ queryKey: ["admin-campaigns"], queryFn: () => api<Campaign[]>("/admin/campaigns?status=PENDING_REVIEW") });
   const reports = useQuery({ queryKey: ["admin-impact-reports"], queryFn: () => api<ImpactReport[]>("/admin/impact-reports?status=PENDING_REVIEW") });
   const users = useQuery({ queryKey: ["admin-users"], queryFn: () => api<AccountUser[]>("/admin/users"), enabled: tab === "users" });
@@ -43,7 +45,7 @@ export function AdminPage(): JSX.Element {
   const anchor = useMutation({ mutationFn: () => api<LedgerAnchor>("/admin/transparency/anchors", { method: "POST" }), onSuccess: () => void client.invalidateQueries({ queryKey: ["public-anchors"] }) });
   const organizationAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: "VERIFIED" | "REJECTED"; reason?: string }) => api(`/admin/organizations/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["admin-organizations"] })
+    onSuccess: () => { void client.invalidateQueries({ queryKey: ["admin-organizations"] }); void client.invalidateQueries({ queryKey: ["admin-all-organizations"] }); }
   });
   const campaignAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: "APPROVED" | "REJECTED"; reason?: string }) => api(`/admin/campaigns/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
@@ -145,6 +147,7 @@ export function AdminPage(): JSX.Element {
           </div>
         )}
 
+        {tab === "organizations" && <OrganizationsTable items={allOrganizations.data ?? []} loading={allOrganizations.isLoading} onDetail={setSelectedOrganization} />}
         {tab === "users" && <UsersTable items={users.data ?? []} loading={users.isLoading} busy={userStatusAction.isPending} onStatus={(id, status) => userStatusAction.mutate({ id, status })} />}
         {tab === "risk" && <RiskTable items={risks.data ?? []} loading={risks.isLoading} />}
         {tab === "audit" && <AuditTable items={[...(identityAudit.data ?? []), ...(campaignAudit.data ?? [])].sort((a, b) => b.created_at.localeCompare(a.created_at))} loading={identityAudit.isLoading || campaignAudit.isLoading} />}
@@ -234,10 +237,17 @@ function OrganizationDetailModal({ item, busy, onClose, onApprove, onReject }: {
               <li>• Mô tả hoạt động phải rõ đối tượng thụ hưởng và phạm vi hỗ trợ.</li>
               <li>• Duyệt xong tổ chức mới được nộp chiến dịch gây quỹ.</li>
             </ul>
-            <div className="mt-6 grid gap-2">
-              <button className="btn-primary w-full" disabled={busy} onClick={() => onApprove(item.user_id)}>Duyệt tổ chức</button>
-              <button className="btn-secondary w-full" disabled={busy} onClick={() => onReject(item.user_id)}>Từ chối có lý do</button>
-            </div>
+            {item.status === "PENDING" ? (
+              <div className="mt-6 grid gap-2">
+                <button className="btn-primary w-full" disabled={busy} onClick={() => onApprove(item.user_id)}>Duyệt tổ chức</button>
+                <button className="btn-secondary w-full" disabled={busy} onClick={() => onReject(item.user_id)}>Từ chối có lý do</button>
+              </div>
+            ) : (
+              <div className="mt-6 rounded-2xl bg-white p-4 text-sm">
+                <p className="font-black text-slate-600">Tổ chức đã được xử lý</p>
+                <p className="mt-1 flex items-center gap-2">Trạng thái hiện tại: <StatusBadge status={item.status} /></p>
+              </div>
+            )}
           </aside>
         </div>
       </section>
@@ -250,6 +260,45 @@ function InfoBlock({ icon, title, children }: { icon: JSX.Element; title: string
     <section className="rounded-[1.5rem] border border-ink/10 p-5">
       <h3 className="flex items-center gap-2 font-black text-ink"><span className="grid h-9 w-9 place-items-center rounded-xl bg-brand-50 text-brand-700">{icon}</span>{title}</h3>
       <div className="mt-4">{children}</div>
+    </section>
+  );
+}
+
+function OrganizationsTable({ items, loading, onDetail }: { items: OrganizationReview[]; loading: boolean; onDetail: (item: OrganizationReview) => void }): JSX.Element {
+  const counts = items.reduce<Record<string, number>>((acc, item) => { acc[item.status] = (acc[item.status] ?? 0) + 1; return acc; }, {});
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-ink/10 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-xl font-black">Tổ chức trên hệ thống</h2>
+          <p className="mt-2 text-sm text-slate-500">Xem chi tiết mọi tổ chức — kể cả tổ chức đã xác minh — không chỉ hàng đợi chờ duyệt.</p>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs font-black">
+          <span className="rounded-full bg-brand-50 px-3 py-1 text-brand-700">Đã xác minh: {counts.VERIFIED ?? 0}</span>
+          <span className="rounded-full bg-amber-50 px-3 py-1 text-amber-700">Chờ duyệt: {counts.PENDING ?? 0}</span>
+          <span className="rounded-full bg-rose-50 px-3 py-1 text-rose-700">Từ chối: {counts.REJECTED ?? 0}</span>
+        </div>
+      </div>
+      {loading ? <div className="skeleton m-5 h-64" /> : (
+        <div className="divide-y divide-ink/10">
+          {items.map((item) => (
+            <div key={item.user_id} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <strong className="text-base">{item.legal_name}</strong>
+                  <StatusBadge status={item.status} />
+                </div>
+                <p className="mt-1 font-mono text-xs text-slate-500">{item.registration_number}</p>
+                <p className="mt-1 truncate text-sm text-slate-600">{item.email}</p>
+              </div>
+              <button className="inline-flex min-h-11 shrink-0 items-center justify-center gap-1 rounded-xl border border-ink/10 px-4 text-sm font-black hover:bg-sage-100" onClick={() => onDetail(item)}>
+                Xem chi tiết <ArrowRight size={15} />
+              </button>
+            </div>
+          ))}
+          {items.length === 0 && <div className="p-5 text-slate-500">Chưa có tổ chức nào.</div>}
+        </div>
+      )}
     </section>
   );
 }

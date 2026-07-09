@@ -1,6 +1,6 @@
 import { roleFunctionGroups } from "../shared/lib/roleGuide";
-import { contentArticles, contentHomeSeed, contentKpis, contentSources } from "../features/content/contentSeed";
-import type { AccountSession, AccountUser, AnalyticsPeriod, AuditLogEntry, Campaign, CampaignAnalytics, CampaignEscrow, CampaignPreference, ContentArticlePage, Donation, DonationAnalytics, FinancialPlan, ImpactEvidence, ImpactReport, LedgerAnchor, LedgerEntry, MerkleProofNode, NotificationPage, RiskAssessment, Role, RoleGuideRole, User, UserAnalytics, UserNotification } from "../types";
+import { contentArticles, contentHomeSeed, contentKpis, contentMetrics, contentSources, contentStatistics, realProjects } from "../features/content/contentSeed";
+import type { AccountSession, AccountUser, AnalyticsPeriod, AuditLogEntry, Campaign, CampaignAnalytics, CampaignEscrow, CampaignPreference, ContentArticlePage, Donation, DonationAnalytics, FinancialPlan, ImpactEvidence, ImpactReport, LedgerAnchor, LedgerEntry, MerkleProofNode, NotificationPage, RiskAssessment, Role, RoleGuideRole, SourceAnalysis, SourceSignal, TrustGrade, User, UserAnalytics, UserNotification } from "../types";
 
 interface OrganizationProfile {
   user_id: string;
@@ -45,6 +45,60 @@ function sortForJson(value: unknown): unknown {
 }
 
 function canonicalJson(value: unknown): string { return JSON.stringify(sortForJson(value)); }
+
+// Bản mock của công cụ phân tích nguồn (mirror logic backend content_verify.analyze_source).
+const PAYMENT_RED_FLAGS: Array<[string, string]> = [
+  ["thẻ cào", "Yêu cầu nạp thẻ cào — kênh gần như không thể hoàn/không truy vết."],
+  ["gift card", "Yêu cầu thẻ quà tặng (gift card) — dấu hiệu lừa đảo điển hình."],
+  ["usdt", "Yêu cầu tiền mã hóa (USDT) — không phù hợp với quyên góp minh bạch."],
+  ["bitcoin", "Yêu cầu tiền mã hóa (Bitcoin) — không truy vết được."],
+  ["crypto", "Yêu cầu tiền mã hóa — không phù hợp với từ thiện minh bạch."],
+];
+const URGENCY_TERMS = ["gấp", "khẩn", "ngay lập tức", "sắp mất", "cứu giúp ngay", "chỉ còn", "cuối cùng", "nhanh tay"];
+const PERSONAL_HINTS = ["tài khoản cá nhân", "stk cá nhân", "chuyển khoản cá nhân"];
+const SOCIAL_ONLY = ["inbox", "nhắn tin riêng", "ib page", "zalo cá nhân", "kết bạn để chuyển"];
+
+function analyzeSourceMock(body: Record<string, unknown>): SourceAnalysis {
+  const url = String(body.url ?? "").trim();
+  const text = String(body.text ?? "").toLocaleLowerCase("vi");
+  const bankType = String(body.bank_account_type ?? "");
+  const hasFinancial = Boolean(body.has_financial_report);
+  const hasLegal = Boolean(body.has_legal_identity);
+  const hasMedia = Boolean(body.has_media);
+
+  let host = "";
+  try { host = url ? new URL(url).hostname.toLocaleLowerCase("vi") : ""; } catch { host = ""; }
+  const source = host ? contentSources.find((s) => { try { const sh = new URL(s.url).hostname.replace("www.", ""); return host === sh || host.endsWith(`.${sh}`) || host.includes(sh); } catch { return false; } }) : undefined;
+  const allowed = Boolean(source) || /mps\.gov\.vn|bocongan\.gov\.vn|chinhphu\.vn|redcross\.org\.vn|unicef\.org/.test(host);
+  const level = (source?.level ?? "D") as TrustGrade;
+  const authority = allowed ? (({ A: 30, B: 25, C: 20, D: 8 } as Record<string, number>)[level] ?? 8) : 0;
+  const financial = hasFinancial ? 25 : 0;
+  const legal = hasLegal ? 20 : (allowed ? 10 : 0);
+  const media = hasMedia ? 15 : 0;
+  const freshness = allowed ? 8 : 0;
+  const total = Math.min(100, authority + financial + legal + media + freshness);
+
+  const signals: SourceSignal[] = [];
+  if (url && !allowed) signals.push({ code: "SOURCE_NOT_WHITELISTED", severity: "HIGH", message: "Nguồn không nằm trong whitelist cơ quan/báo chí/tổ chức uy tín — cần kiểm tra kỹ." });
+  if (bankType === "personal" || PERSONAL_HINTS.some((h) => text.includes(h))) signals.push({ code: "PERSONAL_ACCOUNT", severity: "HIGH", message: "Nhận tiền vào tài khoản cá nhân — tổ chức uy tín thường dùng tài khoản đứng tên tổ chức." });
+  for (const [term, message] of PAYMENT_RED_FLAGS) if (text.includes(term)) signals.push({ code: "PAYMENT_RED_FLAG", severity: "HIGH", message });
+  if (URGENCY_TERMS.some((t) => text.includes(t))) signals.push({ code: "URGENCY_PRESSURE", severity: "MEDIUM", message: "Tạo áp lực thời gian ('gấp', 'khẩn'...) — thủ đoạn thường gặp để nạn nhân chuyển tiền vội." });
+  if (SOCIAL_ONLY.some((t) => text.includes(t))) signals.push({ code: "SOCIAL_ONLY_CONTACT", severity: "MEDIUM", message: "Chỉ liên hệ/chuyển tiền qua tin nhắn riêng — thiếu kênh công khai để đối chiếu." });
+  if (!hasFinancial) signals.push({ code: "NO_FINANCIAL_REPORT", severity: "LOW", message: "Chưa thấy sao kê/báo cáo tài chính công khai để đối chiếu dòng tiền." });
+  if (!hasLegal && !allowed) signals.push({ code: "NO_LEGAL_IDENTITY", severity: "MEDIUM", message: "Chưa xác minh pháp nhân/đại diện của tổ chức đứng sau lời kêu gọi." });
+
+  const high = signals.filter((s) => s.severity === "HIGH").length;
+  const medium = signals.filter((s) => s.severity === "MEDIUM").length;
+  let verdict: SourceAnalysis["verdict"]; let recommendation: string;
+  if (high >= 1 || total < 40) { verdict = "HIGH_RISK"; recommendation = "Có dấu hiệu rủi ro cao. KHÔNG chuyển tiền; đối chiếu với kênh chính thức và cân nhắc báo cáo nếu nghi giả mạo."; }
+  else if (medium >= 1 || total < 70) { verdict = "CAUTION"; recommendation = "Cần thận trọng. Kiểm tra sao kê, tên chủ tài khoản và kênh công khai của tổ chức trước khi ủng hộ."; }
+  else { verdict = "TRUSTED"; recommendation = "Nguồn có độ tin cậy tốt theo dữ liệu hiện có. Vẫn nên đối chiếu tài khoản nhận trước khi chuyển khoản lớn."; }
+  const grade: TrustGrade = total >= 90 ? "A" : total >= 70 ? "B" : total >= 50 ? "C" : "D";
+  return {
+    url, allowed, source_level: level, source_name: source?.name ?? null, verdict, recommendation, signals,
+    score: { total, grade, source_authority: authority, financial_evidence: financial, legal_identity: legal, media_evidence: media, freshness, reasons: ["Chấm điểm theo whitelist nguồn, bằng chứng cung cấp và dấu hiệu rủi ro trong nội dung kêu gọi"] }
+  };
+}
 
 export function sha256Fallback(bytes: Uint8Array): Uint8Array {
   const rotateRight = (value: number, bits: number): number => (value >>> bits) | (value << (32 - bits));
@@ -706,7 +760,30 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (pathname === "/content/home" && method === "GET") return contentHomeSeed as T;
   if (pathname === "/content/sources" && method === "GET") return contentSources as T;
   if (pathname === "/content/kpis" && method === "GET") return contentKpis as T;
-  if (pathname === "/content/alerts" && method === "GET") return contentArticles.filter((article) => article.status === "PUBLISHED" && article.type === "ALERT") as T;
+  if (pathname === "/content/statistics" && method === "GET") return contentStatistics as T;
+  if (pathname === "/content/metrics" && method === "GET") {
+    const type = url.searchParams.get("type");
+    const source = (url.searchParams.get("source") ?? "").toLocaleLowerCase("vi");
+    const period = url.searchParams.get("period");
+    return contentMetrics.filter((metric) =>
+      (!type || metric.metric_type === type)
+      && (!source || metric.source_name.toLocaleLowerCase("vi").includes(source))
+      && (!period || metric.period === period)
+    ) as T;
+  }
+  if (pathname === "/content/projects" && method === "GET") {
+    const source = (url.searchParams.get("source") ?? "").toLocaleLowerCase("vi");
+    const category = (url.searchParams.get("category") ?? "").toLocaleLowerCase("vi");
+    const grade = url.searchParams.get("grade");
+    return realProjects.filter((project) =>
+      project.status === "PUBLISHED"
+      && (!source || project.source_name.toLocaleLowerCase("vi").includes(source) || project.organization.toLocaleLowerCase("vi").includes(source))
+      && (!category || project.category.toLocaleLowerCase("vi").includes(category))
+      && (!grade || project.score.grade === grade)
+    ) as T;
+  }
+  if (pathname === "/assistant/analyze-source" && method === "POST") return analyzeSourceMock(body) as T;
+  if (pathname === "/content/alerts" && method === "GET") return contentArticles.filter((article) => article.status === "PUBLISHED" && (article.type === "ALERT" || article.type === "SCAM_ALERT")) as T;
   if (pathname === "/content/articles" && method === "GET") {
     const q = (url.searchParams.get("q") ?? "").toLocaleLowerCase("vi");
     const type = url.searchParams.get("type");
@@ -718,7 +795,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       const haystack = `${article.title} ${article.excerpt} ${article.summary} ${article.tags.join(" ")}`.toLocaleLowerCase("vi");
       return article.status === "PUBLISHED"
         && (!q || haystack.includes(q))
-        && (!type || article.type === type)
+        && (!type || article.type === type || (type === "ALERT" && article.type === "SCAM_ALERT"))
         && (!sourceLevel || article.source.level === sourceLevel)
         && (!tag || article.tags.includes(tag));
     });
@@ -751,6 +828,112 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (pathname === "/analytics/campaigns/admin" && method === "GET") { requireRole("ADMIN"); return campaignAnalytics(state, period) as T; }
   if (pathname === "/analytics/users/admin" && method === "GET") { requireRole("ADMIN"); return { as_of: new Date().toISOString(), role_distribution: (["DONOR", "ORGANIZATION", "ADMIN"] as const).map((role) => ({ role, count: state.users.filter((item) => item.role === role).length })), organization_statuses: (["PENDING", "VERIFIED", "REJECTED"] as const).map((status) => ({ status, count: state.organizations.filter((item) => item.status === status).length })) } as T; }
 
+  if (pathname === "/assistant/chat" && method === "POST") {
+    const rawMessage = String(body.message ?? "");
+    const message = rawMessage.toLocaleLowerCase("vi");
+    const normalizedMessage = normalizeVietnamese(rawMessage);
+    const vnd = (value: number): string => new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(value);
+    const statsQuestion = ["thống kê", "tóm tắt", "bao nhiêu tiền", "tổng quyên góp", "số liệu", "báo cáo tài chính", "số dư"].some((term) => message.includes(term));
+    const alertQuestion = ["cảnh báo", "lừa đảo", "từ thiện giả", "giả mạo", "sai phạm"].some((term) => message.includes(term));
+    const verifyQuestion = ["kiểm chứng", "nguồn chính thống", "nuôi em", "từ thiện thật", "unicef", "chữ thập đỏ", "kpi", "minh bạch nguồn", "điểm minh bạch"].some((term) => message.includes(term));
+    const outOfScope = ["thoi tiet", "ty gia", "chung khoan", "bong da", "phim", "nau an", "du lich"].some((term) => normalizedMessage.includes(term));
+    const externalInfoQuestion = /(la gi|ai la|o dau|thong tin ve|tim hieu ve)/.test(normalizedMessage)
+      && !["charityconnect", "trustchain", "quyen gop", "ung ho", "chien dich", "minh bach", "bien nhan", "so cai", "ledger", "hash", "tu thien", "canh bao", "kpi"].some((term) => normalizedMessage.includes(term));
+
+    const externalFallback = (outOfScope || externalInfoQuestion) ? await publicExternalAnswer(rawMessage) : null;
+    if (externalFallback) {
+      return {
+        answer: externalFallback.answer,
+        mode: "DEMO",
+        scope: "EXTERNAL_WEB",
+        searched_web: true,
+        knowledge_version: "charityconnect-2026.07",
+        sources: externalFallback.sources,
+        actions: externalFallback.actions,
+        suggestions: externalFallback.suggestions,
+      } as T;
+    }
+    if (outOfScope || externalInfoQuestion) {
+      return {
+        answer: "Câu hỏi này nằm ngoài dữ liệu CharityConnect và mình chưa tìm được nguồn công khai phù hợp trong chế độ web tĩnh. Bạn có thể hỏi thời tiết theo tỉnh/thành, hỏi khái niệm dạng “... là gì”, hoặc quay lại các nội dung kiểm chứng nguồn, thống kê, cảnh báo và minh bạch quyên góp.",
+        mode: "DEMO",
+        scope: "EXTERNAL_WEB",
+        searched_web: false,
+        knowledge_version: "charityconnect-2026.07",
+        sources: [],
+        actions: [{ label: "Mở kiểm chứng", path: "/kiem-chung" }],
+        suggestions: ["Thời tiết Đà Nẵng hôm nay", "UNICEF là gì?", "Cảnh báo lừa đảo quyên góp"],
+      } as T;
+    }
+    if (verifyQuestion || alertQuestion) {
+      const nuoiEmProject = realProjects.find((project) => project.id === "real-project-nuoiem");
+      const nuoiEmCost = contentMetrics.find((metric) => metric.id === "metric-nuoiem-cost-2025");
+      const topMetrics = contentMetrics.slice(0, 5).map((metric) => `- ${metric.label}: ${metric.display_value} (${metric.source_name}, nguồn ${metric.confidence_level})`);
+      const alerts = contentArticles.filter((article) => (article.type === "ALERT" || article.type === "SCAM_ALERT") && article.status === "PUBLISHED");
+      const alertLines = alerts.slice(0, 2).map((article) => `- ${article.title} (${article.source.name})`);
+      return {
+        answer: `Kho kiểm chứng hiện có ${contentStatistics.sources_total} nguồn, ${contentStatistics.real_projects} dự án/tổ chức thật, ${contentStatistics.metric_claims} claim số liệu và ${contentStatistics.official_source_rate}% claim từ nguồn A/B.${nuoiEmProject && nuoiEmCost ? `\n\nNuôi Em: chi phí tham chiếu ${nuoiEmCost.display_value}; điểm minh bạch ${nuoiEmProject.score.total}/100, hạng ${nuoiEmProject.score.grade}.` : ""}\n\nSố liệu nổi bật:\n${topMetrics.join("\n")}\n\nCảnh báo nổi bật:\n${alertLines.join("\n")}\n\nĐiểm minh bạch 100 = 30 nguồn chính thống + 25 tài chính/sao kê + 20 pháp lý + 15 bằng chứng + 10 độ mới.`,
+        mode: "DEMO",
+        scope: "INTERNAL",
+        searched_web: false,
+        knowledge_version: "charityconnect-2026.07",
+        sources: [{ kind: "INTERNAL", title: "Kho kiểm chứng nguồn", path: "/kiem-chung" }],
+        actions: [{ label: "Mở kiểm chứng", path: "/kiem-chung" }, { label: "Xem cảnh báo", path: "/canh-bao" }],
+        suggestions: ["Nuôi Em bao nhiêu tiền một năm?", "Có cảnh báo từ thiện giả nào?", "UNICEF có số liệu trẻ em gì?"],
+      } as T;
+    }
+    if (statsQuestion) {
+      const analytics = donationAnalytics(state, "all", state.donations);
+      const totals = analytics.totals;
+      const top = analytics.top_campaigns[0];
+      return {
+        answer: `Tóm tắt thống kê CharityConnect hiện tại:\n- Tổng quyên góp: ${vnd(totals.donation_amount)} qua ${totals.donation_count} lượt từ ${totals.unique_donors} nhà hảo tâm.\n- Trung bình mỗi lượt: ${vnd(totals.average_amount)}.\n- Quỹ đã giải ngân được nghiệm thu: ${vnd(totals.verified_fund_usage)}; số dư minh bạch: ${vnd(totals.transparent_balance)}.${top ? `\n- Chiến dịch dẫn đầu: "${top.campaign_title}" với ${vnd(top.donation_amount)} (${top.donation_count} lượt).` : ""}\n\nKPI kiểm chứng nguồn: ${contentStatistics.metric_claims} claim số liệu, tổng tiền theo nguồn công bố ${vnd(contentStatistics.total_reported_amount)}, ${contentStatistics.real_projects} dự án/tổ chức thật.`,
+        mode: "DEMO",
+        scope: "INTERNAL",
+        searched_web: false,
+        knowledge_version: "charityconnect-2026.07",
+        sources: [{ kind: "INTERNAL", title: "Bảng thống kê /thong-ke", path: "/thong-ke" }, { kind: "INTERNAL", title: "Kho kiểm chứng /kiem-chung", path: "/kiem-chung" }],
+        actions: [{ label: "Mở thống kê", path: "/thong-ke" }],
+        suggestions: ["Chiến dịch nào đang gây quỹ?", "Có cảnh báo từ thiện giả nào?", "Điểm minh bạch tính thế nào?"],
+      } as T;
+    }
+    if (message.includes("biên nhận") || message.includes("qr")) {
+      return {
+        answer: "Sau khi quyên góp thành công, mở biên nhận để xem QR, mã CC-..., ledger hash và trạng thái xác minh. Bạn cũng có thể vào Xác minh biên nhận, nhập mã CC-... để kiểm tra bằng chứng công khai.",
+        mode: "DEMO",
+        scope: "INTERNAL",
+        searched_web: false,
+        knowledge_version: "charityconnect-2026.07",
+        sources: [{ kind: "INTERNAL", title: "Xác minh biên nhận", path: "/xac-minh-bien-nhan" }],
+        actions: [{ label: "Xác minh biên nhận", path: "/xac-minh-bien-nhan" }],
+        suggestions: ["TrustChain là gì?", "Xem sổ cái minh bạch", "Tải PDF đóng góp"],
+      } as T;
+    }
+    if (message.includes("minh bạch") || message.includes("hash") || message.includes("blockchain")) {
+      return {
+        answer: "Trang Minh bạch công khai chuỗi hash SHA-256 của quyên góp và báo cáo sử dụng quỹ. Chuỗi này giúp phát hiện dữ liệu bị sửa, có Merkle proof/anchor để kiểm chứng biên nhận; đây không phải tiền mã hóa hay ví crypto.",
+        mode: "DEMO",
+        scope: "INTERNAL",
+        searched_web: false,
+        knowledge_version: "charityconnect-2026.07",
+        sources: [{ kind: "INTERNAL", title: "Sổ cái minh bạch", path: "/minh-bach" }],
+        actions: [{ label: "Mở sổ cái", path: "/minh-bach" }],
+        suggestions: ["Xác minh biên nhận", "Điểm neo TrustChain là gì?", "Xem KPI kiểm chứng"],
+      } as T;
+    }
+    return {
+      answer: "Mình có thể hướng dẫn quyên góp, xác minh biên nhận, xem sổ cái minh bạch, kiểm chứng nguồn từ thiện, cảnh báo lừa đảo hoặc tóm tắt thống kê. Bạn muốn xem phần nào?",
+      mode: "DEMO",
+      scope: "INTERNAL",
+      searched_web: false,
+      knowledge_version: "charityconnect-2026.07",
+      sources: [{ kind: "INTERNAL", title: "Hướng dẫn sử dụng CharityConnect", path: "/" }],
+      actions: [{ label: "Xem chiến dịch", path: "/chien-dich" }, { label: "Mở kiểm chứng", path: "/kiem-chung" }],
+      suggestions: ["Nuôi Em bao nhiêu tiền một năm?", "Cảnh báo lừa đảo quyên góp", "Xem thống kê CharityConnect"],
+    } as T;
+  }
+
+  /* c8 ignore start -- legacy chatbot branch kept for backward-safe rollback; the clean internal-first branch above handles this route. */
   if (pathname === "/assistant/chat" && method === "POST") {
     const message = String(body.message ?? "").toLocaleLowerCase("vi");
     const normalizedMessage = normalizeVietnamese(String(body.message ?? ""));
@@ -794,7 +977,9 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       suggestions = ["Cách nhận biết fanpage giả mạo?", "Tóm tắt thống kê quyên góp", "Điểm minh bạch tính thế nào?"];
     } else if (verifyQuestion) {
       const nuoiEm = contentArticles.find((article) => article.slug.includes("nuoi-em"));
-      answer = `Kho kiểm chứng hiện có ${contentKpis.sources_total} nguồn theo dõi, ${contentKpis.official_articles} bài nguồn chính thống, ${contentKpis.alert_cases} cảnh báo và ${contentKpis.evidence_rate}% bài có số liệu/bằng chứng. ${nuoiEm ? `Ví dụ: bài "${nuoiEm.title}" đạt ${nuoiEm.score.total}/100 (hạng ${nuoiEm.score.grade}); claim nổi bật: ${nuoiEm.claims[0]?.value}.` : ""} Điểm minh bạch 100 = 30 nguồn chính thống + 25 tài chính/sao kê + 20 pháp lý + 15 bằng chứng + 10 độ mới.`;
+      const nuoiEmProject = realProjects.find((project) => project.id === "real-project-nuoiem");
+      const nuoiEmCost = contentMetrics.find((metric) => metric.id === "metric-nuoiem-cost-2025");
+      answer = `Kho kiểm chứng hiện có ${contentStatistics.sources_total} nguồn, ${contentStatistics.real_projects} dự án/tổ chức thật, ${contentStatistics.metric_claims} claim số liệu và ${contentStatistics.official_source_rate}% claim từ nguồn A/B. ${nuoiEmProject && nuoiEmCost ? `Riêng Nuôi Em: chi phí tham chiếu là ${nuoiEmCost.display_value} theo nguồn công bố; dự án đạt ${nuoiEmProject.score.total}/100 (hạng ${nuoiEmProject.score.grade}).` : nuoiEm ? `Ví dụ: bài "${nuoiEm.title}" đạt ${nuoiEm.score.total}/100 (hạng ${nuoiEm.score.grade}); claim nổi bật: ${nuoiEm.claims[0]?.value}.` : ""} Điểm minh bạch 100 = 30 nguồn chính thống + 25 tài chính/sao kê + 20 pháp lý + 15 bằng chứng + 10 độ mới.`;
       sources = [{ kind: "INTERNAL", title: "Kho kiểm chứng nguồn", path: "/kiem-chung" }];
       actions = [{ label: "Mở kiểm chứng", path: "/kiem-chung" }];
     } else if (message.includes("đăng nhập") || message.includes("tài khoản")) {
@@ -826,6 +1011,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       suggestions
     } as T;
   }
+  /* c8 ignore stop */
   if (pathname === "/assistant/role-guide" && method === "GET") {
     const role = (url.searchParams.get("role") ?? "PUBLIC") as RoleGuideRole;
     return mockRoleGuide(role, url.searchParams.get("path") ?? "/") as T;

@@ -227,7 +227,7 @@ export interface TrustChainHealth {
 }
 
 export type ContentSourceLevel = "A" | "B" | "C" | "D";
-export type ContentArticleType = "ORGANIZATION" | "TRANSPARENCY" | "ALERT" | "DATA" | "VIDEO";
+export type ContentArticleType = "ORGANIZATION" | "TRANSPARENCY" | "ALERT" | "DATA" | "VIDEO" | "REAL_PROJECT" | "REAL_STATISTIC" | "SCAM_ALERT" | "FINANCIAL_REPORT";
 export type ContentReviewStatus = "PUBLISHED" | "PENDING_REVIEW" | "REJECTED";
 export type TrustGrade = "A" | "B" | "C" | "D" | "X";
 
@@ -263,6 +263,35 @@ export interface ContentClaim {
   label: string;
   value: string;
   note: string;
+}
+
+export interface ContentMetric {
+  id: string;
+  label: string;
+  numeric_value: number;
+  display_value: string;
+  unit: "VND" | "PEOPLE" | "COUNT" | "PERCENT" | "VND_PER_YEAR" | "MONTH" | "PROJECT";
+  metric_type: "SUPPORT_AMOUNT" | "FRAUD_AMOUNT" | "BENEFICIARY" | "COST" | "FINANCIAL_BALANCE" | "SOURCE_STATISTIC" | "ALERT_CASE";
+  period?: string;
+  source_url: string;
+  source_name: string;
+  collected_at: string;
+  confidence_level: ContentSourceLevel;
+}
+
+export interface RealProject {
+  id: string;
+  slug: string;
+  name: string;
+  organization: string;
+  category: string;
+  source_url: string;
+  source_name: string;
+  description: string;
+  image_url: string;
+  metrics: ContentMetric[];
+  score: TransparencyScore;
+  status: ContentReviewStatus;
 }
 
 export interface ContentArticle {
@@ -301,6 +330,39 @@ export interface ContentKpiSummary {
   grade_distribution: Record<TrustGrade, number>;
 }
 
+export interface ContentStatistics {
+  sources_total: number;
+  real_projects: number;
+  metric_claims: number;
+  official_source_rate: number;
+  alert_cases: number;
+  total_reported_amount: number;
+  total_reported_beneficiaries: number;
+  updated_at: string;
+  grade_distribution: Record<TrustGrade, number>;
+}
+
+export type SourceVerdict = "TRUSTED" | "CAUTION" | "HIGH_RISK";
+export interface SourceSignal { code: string; severity: "HIGH" | "MEDIUM" | "LOW"; message: string }
+export interface SourceAnalysisRequest {
+  url?: string;
+  text?: string;
+  bank_account_type?: "personal" | "organization" | "";
+  has_financial_report?: boolean;
+  has_legal_identity?: boolean;
+  has_media?: boolean;
+}
+export interface SourceAnalysis {
+  url: string;
+  allowed: boolean;
+  source_level: TrustGrade;
+  source_name: string | null;
+  verdict: SourceVerdict;
+  recommendation: string;
+  signals: SourceSignal[];
+  score: TransparencyScore;
+}
+
 export interface ContentHome {
   hero: {
     title: string;
@@ -313,6 +375,8 @@ export interface ContentHome {
   alerts: ContentArticle[];
   videos: ContentArticle[];
   sources: ContentSource[];
+  projects?: RealProject[];
+  statistics?: ContentStatistics;
 }
 
 export interface ContentArticlePage {

@@ -31,7 +31,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins_from_env(),
     allow_origin_regex=os.getenv("CORS_ORIGIN_REGEX", r"^http://(127\.0\.0\.1|localhost):\d+$"),
-    allow_methods=["POST", "GET"],
+    allow_methods=["POST", "GET", "PATCH"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -121,8 +121,15 @@ class ContentIngestRequest(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=8)
 
 
+class ContentReviewRequest(BaseModel):
+    status: Literal["PUBLISHED", "REJECTED"]
+    reason: str | None = None
+
+
 class AnalyzeSourceRequest(BaseModel):
-    url: str
+    url: str = ""
+    text: str = ""
+    bank_account_type: str = ""
     has_financial_report: bool = False
     has_legal_identity: bool = False
     has_media: bool = False
@@ -282,6 +289,139 @@ def smart_offline_answer(message: str, context_str: str) -> str:
                 "Các chiến dịch đang gây quỹ trên CharityConnect:\n" + "\n".join(lines) +
                 "\nBạn có thể nhấn trực tiếp vào để ủng hộ và nhận biên nhận minh bạch."
             )
+
+    return offline_answer(message)
+
+
+async def load_internal_context(path: str) -> str:
+    campaign_url = os.getenv("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
+    donation_url = os.getenv("DONATION_SERVICE_URL", "http://donation-service:8000")
+    facts: dict[str, object] = {
+        "content_kpis": content_verify.kpis(),
+        "content_statistics": content_verify.statistics(),
+        "content_projects": content_verify.list_projects(),
+        "content_metrics": content_verify.list_metrics(),
+        "content_articles": [
+            {
+                "title": item["title"],
+                "type": item["type"],
+                "source": item["source"]["name"],
+                "source_level": item["source"]["level"],
+                "score": item["score"]["total"],
+                "grade": item["score"]["grade"],
+                "claims": item["claims"],
+                "tags": item["tags"],
+                "path": f"/bai-viet/{item['slug']}",
+            }
+            for item in content_verify.ARTICLES
+            if item["status"] == "PUBLISHED"
+        ][:12],
+    }
+    async with httpx.AsyncClient(timeout=2) as client:
+        calls = [
+            client.get(f"{campaign_url}/campaigns"),
+            client.get(f"{campaign_url}/analytics/campaigns/public?period=30d"),
+            client.get(f"{donation_url}/analytics/donations/public?period=30d"),
+            client.get(f"{donation_url}/transparency/anchors/health"),
+        ]
+        results = await asyncio.gather(*calls, return_exceptions=True)
+    labels = ["campaigns", "campaign_analytics", "donation_analytics", "trustchain_health"]
+    for label, result in zip(labels, results):
+        if isinstance(result, httpx.Response) and result.status_code == 200:
+            facts[label] = result.json()
+    return "DỮ LIỆU WEBSITE HIỆN TẠI:\n" + json.dumps(facts, ensure_ascii=False)[:14000]
+
+
+def _parse_facts(context_str: str) -> dict:
+    prefix = "DỮ LIỆU WEBSITE HIỆN TẠI:\n"
+    if context_str.startswith(prefix):
+        try:
+            return json.loads(context_str[len(prefix):])
+        except Exception:
+            return {}
+    return {}
+
+
+def smart_offline_answer(message: str, context_str: str) -> str:
+    folded = fold(message)
+    facts = _parse_facts(context_str)
+    campaigns = facts.get("campaigns", []) or []
+    totals = facts.get("donation_analytics", {}).get("totals", {}) or {}
+    content_kpis = facts.get("content_kpis", {}) or {}
+    content_statistics = facts.get("content_statistics", {}) or {}
+    content_projects = facts.get("content_projects", []) or []
+    content_metrics = facts.get("content_metrics", []) or []
+    content_articles = facts.get("content_articles", []) or []
+    intent = classify_intent(message)
+
+    named = _campaign_lookup(folded, campaigns)
+    if named:
+        return named
+
+    verify_terms = (
+        "tre em", "tre em vung cao", "nuoi em", "tu thien that", "chu thap do", "unicef",
+        "tu thien gia", "canh bao", "nguon chinh thong", "kiem chung", "kpi minh bach",
+        "diem minh bach", "du an that", "so lieu that", "cuba", "sao ke",
+    )
+    if any(term in folded for term in verify_terms):
+        matched_metrics = []
+        for metric in content_metrics:
+            metric_text = fold(" ".join([metric.get("label", ""), metric.get("source_name", ""), metric.get("period") or ""]))
+            if any(term in metric_text for term in verify_terms) or any(term in folded for term in ("kpi", "kiem chung", "so lieu")):
+                matched_metrics.append(metric)
+
+        metric_lines = [
+            f"- {metric.get('label')}: {metric.get('display_value')} ({metric.get('source_name')}, nguồn {metric.get('confidence_level')})"
+            for metric in matched_metrics[:5]
+        ]
+        project_lines = [
+            f"- {project.get('name')} — {project.get('organization')}: {project.get('score', {}).get('total')}/100, hạng {project.get('score', {}).get('grade')}"
+            for project in content_projects[:4]
+        ]
+        article_lines = []
+        for article in content_articles[:3]:
+            claims = article.get("claims", [])
+            claim_text = f" — {claims[0].get('label')}: {claims[0].get('value')}" if claims else ""
+            article_lines.append(f"- {article.get('title')} ({article.get('source')}, cấp {article.get('source_level')}, {article.get('score')}/100, hạng {article.get('grade')}){claim_text}")
+
+        return (
+            "Tóm tắt kho kiểm chứng CharityConnect:\n"
+            f"- Nguồn đang theo dõi: {content_statistics.get('sources_total', content_kpis.get('sources_total', 0))}; dự án/tổ chức thật: {content_statistics.get('real_projects', 0)}; claim số liệu: {content_statistics.get('metric_claims', 0)}.\n"
+            f"- Claim từ nguồn A/B: {content_statistics.get('official_source_rate', 0)}%; cảnh báo đã phân loại: {content_statistics.get('alert_cases', content_kpis.get('alert_cases', 0))}.\n"
+            + ("\nSố liệu nổi bật:\n" + "\n".join(metric_lines) if metric_lines else "")
+            + ("\nDự án/tổ chức thật:\n" + "\n".join(project_lines) if project_lines else "")
+            + ("\nBài liên quan:\n" + "\n".join(article_lines) if article_lines else "")
+            + "\nMở /kiem-chung để xem card ngắn, /canh-bao để xem case rủi ro, hoặc hỏi: “Nuôi Em bao nhiêu tiền một năm?”."
+        )
+
+    stat_terms = ("thong ke", "tong quyen gop", "tien quyen gop", "bao nhieu tien", "so du", "so lieu", "bao cao tai chinh")
+    if intent == "statistics" or any(term in folded for term in stat_terms):
+        if totals:
+            amount = totals.get("donation_amount", 0)
+            count = totals.get("donation_count", 0)
+            donors = totals.get("unique_donors", 0)
+            used = totals.get("verified_fund_usage", 0)
+            balance = totals.get("transparent_balance", 0)
+            return (
+                "Báo cáo tài chính hệ thống CharityConnect hiện tại:\n"
+                f"- Tổng số tiền quyên góp: {amount:,.0f} VND\n"
+                f"- Số lượt quyên góp: {count} lượt từ {donors} nhà hảo tâm\n"
+                f"- Quỹ đã giải ngân nghiệm thu: {used:,.0f} VND\n"
+                f"- Số dư minh bạch khả dụng: {balance:,.0f} VND."
+            )
+        return "Mở /thong-ke để xem biểu đồ quyên góp, quỹ đã sử dụng và số dư minh bạch. Nếu backend Donation đang chạy, mình sẽ đọc số liệu trực tiếp từ API."
+
+    list_terms = ("chien dich", "danh sach", "gay quy", "hoat dong", "ung ho", "quyen gop")
+    if intent == "donation" or any(term in folded for term in list_terms):
+        active = [c for c in campaigns if c.get("status") == "APPROVED"]
+        if active:
+            lines = []
+            for c in active[:4]:
+                goal = c.get("goal_amount", 0) or 0
+                raised = c.get("raised_amount", 0) or 0
+                pct = (raised / goal * 100) if goal else 0
+                lines.append(f"• {c.get('title')}: đã quyên góp {raised:,.0f}/{goal:,.0f} VND ({pct:.1f}%)")
+            return "Các chiến dịch đang gây quỹ trên CharityConnect:\n" + "\n".join(lines) + "\nBạn có thể mở /chien-dich để ủng hộ và nhận biên nhận minh bạch."
 
     return offline_answer(message)
 
@@ -590,7 +730,7 @@ async def content_article_detail(slug: str) -> dict[str, Any]:
 
 @app.get("/content/alerts")
 async def content_alerts() -> list[dict[str, Any]]:
-    return [item for item in content_verify.ARTICLES if item["status"] == "PUBLISHED" and item["type"] == "ALERT"]
+    return [item for item in content_verify.ARTICLES if item["status"] == "PUBLISHED" and item["type"] in {"ALERT", "SCAM_ALERT"}]
 
 
 @app.get("/content/sources")
@@ -603,10 +743,33 @@ async def content_kpis() -> dict[str, Any]:
     return content_verify.kpis()
 
 
+@app.get("/content/projects")
+async def content_projects(source: str = "", category: str = "", grade: str = "") -> list[dict[str, Any]]:
+    return content_verify.list_projects(source=source, category=category, grade=grade)
+
+
+@app.get("/content/metrics")
+async def content_metrics(type: str | None = None, source: str = "", period: str | None = None) -> list[dict[str, Any]]:
+    return content_verify.list_metrics(metric_type=type, source=source, period=period)
+
+
+@app.get("/content/statistics")
+async def content_statistics() -> dict[str, Any]:
+    return content_verify.statistics()
+
+
 @app.post("/admin/content/ingest")
 async def admin_content_ingest(payload: ContentIngestRequest) -> dict[str, Any]:
     results = await asyncio.gather(*(content_verify.ingest_url(url) for url in payload.urls))
     return {"ingested": sum(1 for item in results if item.get("accepted")), "results": results}
+
+
+@app.patch("/admin/content/articles/{article_id}/review")
+async def admin_content_review(article_id: str, payload: ContentReviewRequest) -> dict[str, Any]:
+    result = content_verify.review_article(article_id, payload.status, payload.reason)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result.get("reason", "Không tìm thấy bài cần duyệt."))
+    return result
 
 
 @app.post("/assistant/analyze-source")
@@ -616,6 +779,8 @@ async def assistant_analyze_source(payload: AnalyzeSourceRequest) -> dict[str, A
         has_financial_report=payload.has_financial_report,
         has_legal_identity=payload.has_legal_identity,
         has_media=payload.has_media,
+        text=sanitize_text(payload.text)[:2000],
+        bank_account_type=payload.bank_account_type,
     )
 
 

@@ -1,6 +1,6 @@
 import { mockApi } from "./mockApi";
 import { roleFunctionGroups } from "../shared/lib/roleGuide";
-import type { AnchorOnchainResponse, AssistantRequest, AssistantResponse, MerkleProofExport, Role, RoleGuideResponse, TrustChainHealth } from "../types";
+import type { AnchorOnchainResponse, AssistantRequest, AssistantResponse, MerkleProofExport, Role, RoleGuideResponse, SourceAnalysis, SourceAnalysisRequest, TrustChainHealth } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
 // Local Vite runs should work without Docker. The production Docker image
@@ -91,6 +91,23 @@ export async function askAssistant(request: AssistantRequest): Promise<Assistant
     return await response.json() as AssistantResponse;
   } catch {
     return mockApi<AssistantResponse>("/assistant/chat", { method: "POST", body: JSON.stringify(request) });
+  }
+}
+
+// Công cụ phân tích nguồn/lời kêu gọi từ thiện (AI một lần, không phải chatbot).
+export async function analyzeSource(request: SourceAnalysisRequest): Promise<SourceAnalysis> {
+  if (!isMockMode) return api<SourceAnalysis>("/assistant/analyze-source", { method: "POST", body: JSON.stringify(request) });
+  const assistantBase = import.meta.env.VITE_ASSISTANT_URL ?? "http://127.0.0.1:8001";
+  try {
+    const response = await fetch(`${assistantBase}/assistant/analyze-source`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request)
+    });
+    if (!response.ok) throw new Error("Analyzer unavailable");
+    return await response.json() as SourceAnalysis;
+  } catch {
+    return mockApi<SourceAnalysis>("/assistant/analyze-source", { method: "POST", body: JSON.stringify(request) });
   }
 }
 

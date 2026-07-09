@@ -9,12 +9,25 @@ client = TestClient(app)
 def test_content_verify_public_api_serves_seed_data():
     main.rate_buckets.clear()
     home = client.get("/content/home").json()
-    assert home["kpis"]["sources_total"] >= 5
+    assert home["kpis"]["sources_total"] >= 8
     assert home["alerts"]
+    assert home["projects"]
+    assert home["statistics"]["metric_claims"] >= 8
     articles = client.get("/content/articles?type=ALERT").json()
     assert articles["total"] == home["kpis"]["alert_cases"]
     detail = client.get(f"/content/articles/{articles['items'][0]['slug']}").json()
     assert detail["source_url"].startswith("https://")
+
+
+def test_content_projects_metrics_and_statistics():
+    projects = client.get("/content/projects?source=UNICEF").json()
+    assert projects
+    assert projects[0]["source_name"] == "UNICEF Việt Nam"
+    metrics = client.get("/content/metrics?type=COST&source=Nuôi%20Em").json()
+    assert metrics[0]["numeric_value"] == 1450000
+    statistics = client.get("/content/statistics").json()
+    assert statistics["total_reported_amount"] > 0
+    assert statistics["official_source_rate"] > 0
 
 
 def test_analyze_source_scores_whitelist_and_evidence():
@@ -30,10 +43,36 @@ def test_analyze_source_scores_whitelist_and_evidence():
     assert blocked["allowed"] is False
 
 
+def test_analyze_source_detects_scam_signals_and_verdict():
+    # Lời kêu gọi lừa đảo điển hình -> HIGH_RISK với nhiều dấu hiệu.
+    scam = client.post("/assistant/analyze-source", json={
+        "url": "https://facebook.com/fanpage-gia",
+        "text": "Kêu gọi GẤP! Cần cứu giúp ngay, chuyển khoản cá nhân hoặc thẻ cào, inbox page để chuyển",
+        "bank_account_type": "personal",
+    }).json()
+    assert scam["verdict"] == "HIGH_RISK"
+    codes = {s["code"] for s in scam["signals"]}
+    assert {"SOURCE_NOT_WHITELISTED", "PERSONAL_ACCOUNT", "PAYMENT_RED_FLAG", "URGENCY_PRESSURE"} <= codes
+    assert any(s["severity"] == "HIGH" for s in scam["signals"])
+
+    # Nguồn cơ quan nhà nước + đủ bằng chứng -> TRUSTED, không có dấu hiệu.
+    trusted = client.post("/assistant/analyze-source", json={
+        "url": "https://mps.gov.vn/tin-canh-bao",
+        "has_financial_report": True, "has_legal_identity": True, "has_media": True,
+    }).json()
+    assert trusted["verdict"] == "TRUSTED"
+    assert trusted["signals"] == []
+
+
 def test_admin_ingest_rejects_non_whitelisted_url():
     payload = client.post("/admin/content/ingest", json={"urls": ["https://example.com/random"]}).json()
     assert payload["ingested"] == 0
     assert payload["results"][0]["accepted"] is False
+
+
+def test_admin_review_unknown_article_returns_404():
+    response = client.patch("/admin/content/articles/missing/review", json={"status": "PUBLISHED"})
+    assert response.status_code == 404
 
 
 def test_chat_answers_verify_kpis_from_internal_content(monkeypatch):
@@ -42,7 +81,7 @@ def test_chat_answers_verify_kpis_from_internal_content(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     response = client.post("/assistant/chat", json={"message": "thống kê hỗ trợ trẻ em vùng cao và nguồn chính thống"}).json()
     assert response["scope"] == "INTERNAL"
-    assert "Nguồn đang theo dõi" in response["answer"]
+    assert "claim số liệu" in response["answer"]
     assert "Nuôi Em" in response["answer"]
 
 

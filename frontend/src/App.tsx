@@ -7,6 +7,8 @@ const CampaignListPage = lazy(() => import("./features/campaigns/CampaignListPag
 const VerifyHomePage = lazy(() => import("./features/content/VerifyHomePage").then((module) => ({ default: module.VerifyHomePage })));
 const ContentListPage = lazy(() => import("./features/content/ContentListPage").then((module) => ({ default: module.ContentListPage })));
 const ContentArticlePage = lazy(() => import("./features/content/ContentArticlePage").then((module) => ({ default: module.ContentArticlePage })));
+const SourceAnalyzerPage = lazy(() => import("./features/content/SourceAnalyzerPage").then((module) => ({ default: module.SourceAnalyzerPage })));
+const RealProjectDetailPage = lazy(() => import("./features/content/RealProjectDetailPage").then((module) => ({ default: module.RealProjectDetailPage })));
 const CampaignDetailPage = lazy(() => import("./features/campaigns/CampaignDetailPage").then((module) => ({ default: module.CampaignDetailPage })));
 const DonationPage = lazy(() => import("./features/donations/DonationPage").then((module) => ({ default: module.DonationPage })));
 const LoginPage = lazy(() => import("./features/account/LoginPage").then((module) => ({ default: module.LoginPage })));
@@ -32,7 +34,9 @@ export function App(): JSX.Element {
       <Route path="chien-dich" element={<CampaignListPage />} />
       <Route path="kiem-chung" element={<ContentListPage />} />
       <Route path="canh-bao" element={<ContentListPage mode="alerts" />} />
+      <Route path="kiem-tra-nguon" element={<SourceAnalyzerPage />} />
       <Route path="bai-viet/:slug" element={<ContentArticlePage />} />
+      <Route path="du-an/:slug" element={<RealProjectDetailPage />} />
       <Route path="chien-dich/:id" element={<CampaignDetailPage />} />
       <Route path="minh-bach" element={<TransparencyPage />} />
       <Route path="thong-ke" element={<StatisticsPage />} />

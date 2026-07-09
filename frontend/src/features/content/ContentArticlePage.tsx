@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ExternalLink, PlayCircle, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ExternalLink, Info, PlayCircle, ShieldCheck } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import type { ContentArticle } from "../../types";
@@ -10,7 +10,7 @@ export function ContentArticlePage(): JSX.Element {
   const article = useQuery({
     queryKey: ["content-article", slug],
     queryFn: () => api<ContentArticle>(`/content/articles/${slug}`),
-    enabled: Boolean(slug)
+    enabled: Boolean(slug),
   });
 
   if (article.isLoading) return <div className="container-page py-12"><div className="skeleton h-[640px]" /></div>;
@@ -37,6 +37,12 @@ export function ContentArticlePage(): JSX.Element {
 
           <section className="mt-8 card p-6 sm:p-8">
             <h2 className="text-2xl font-black">Tóm tắt và nhận định</h2>
+            {item.source.level === "C" && (
+              <div className="mt-4 flex gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+                <Info size={20} className="mt-0.5 shrink-0" />
+                <p>Nguồn này là nguồn tự công bố của tổ chức. Hãy xem link gốc, ngày cập nhật, sao kê/chứng từ và đối chiếu thêm trước khi quyên góp số tiền lớn.</p>
+              </div>
+            )}
             <div className="mt-5 space-y-5 text-base leading-8 text-slate-700">
               {item.body.map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
             </div>

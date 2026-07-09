@@ -15,6 +15,12 @@ import { createAccountSession } from "./sessions";
 import { buildCorsOptions, securityHeaders } from "./security";
 import { issueRefreshToken, revokeRefreshToken, rotateRefreshToken } from "./tokens";
 import { checkLock, registerFailedLogin, resetFailedLogins } from "./passwords";
+import { rateLimit } from "./rateLimit";
+
+// Rate limit theo IP cho các endpoint xác thực nhạy cảm (chống brute-force / spam).
+const loginLimiter = rateLimit({ windowMs: 60_000, max: 10, scope: "auth-login", message: "Bạn đăng nhập quá nhiều lần. Vui lòng thử lại sau 1 phút." });
+const registerLimiter = rateLimit({ windowMs: 60_000, max: 5, scope: "auth-register", message: "Bạn tạo tài khoản quá nhanh. Vui lòng thử lại sau 1 phút." });
+const refreshLimiter = rateLimit({ windowMs: 60_000, max: 30, scope: "auth-refresh" });
 
 collectDefaultMetrics({ prefix: "identity_" });
 const requestCount = new Counter({ name: "identity_http_requests_total", help: "HTTP requests", labelNames: ["method", "route", "status"] });
@@ -38,6 +44,9 @@ export const app = express();
 app.use(securityHeaders);
 app.use(cors(buildCorsOptions()));
 app.use(express.json());
+// API versioning: công bố phiên bản API hiện tại trên mọi response để client/gateway đối chiếu.
+const API_VERSION = process.env.API_VERSION ?? "v1";
+app.use((_req, res, next) => { res.setHeader("X-API-Version", API_VERSION); next(); });
 app.use((req, res, next) => {
   const end = requestDuration.startTimer({ method: req.method, route: req.path });
   res.on("finish", () => {
@@ -75,7 +84,7 @@ app.get("/analytics/users/admin", authenticate, authorize("ADMIN"), async (_req,
   } catch (error) { next(error); }
 });
 
-app.post("/auth/register", async (req, res, next) => {
+app.post("/auth/register", registerLimiter, async (req, res, next) => {
   try {
     const input = registerSchema.parse(req.body);
     const passwordHash = await bcrypt.hash(input.password, 12);
@@ -103,7 +112,7 @@ app.post("/auth/register", async (req, res, next) => {
   }
 });
 
-app.post("/auth/login", async (req, res, next) => {
+app.post("/auth/login", loginLimiter, async (req, res, next) => {
   try {
     const input = loginSchema.parse(req.body);
     const rows = await query<{ id: string; email: string; name: string; role: Role; password_hash: string; status?: "ACTIVE" | "DISABLED" }>(
@@ -153,7 +162,7 @@ app.post("/auth/login", async (req, res, next) => {
 
 const refreshSchema = z.object({ refresh_token: z.string().min(32).max(256) });
 
-app.post("/auth/refresh", async (req, res, next) => {
+app.post("/auth/refresh", refreshLimiter, async (req, res, next) => {
   try {
     const input = refreshSchema.parse(req.body);
     const result = await rotateRefreshToken(input.refresh_token);

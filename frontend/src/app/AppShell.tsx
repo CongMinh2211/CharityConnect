@@ -32,6 +32,7 @@ export function AppShell(): JSX.Element {
           </Link>
           <nav aria-label="Điều hướng chính" className="hidden items-center gap-1 text-sm font-semibold md:flex">
             <NavLink to="/" end className={navClass}>Kiểm chứng</NavLink>
+            <NavLink to="/kiem-tra-nguon" className={navClass}>Kiểm tra nguồn</NavLink>
             <NavLink to="/chien-dich" className={navClass}>Chiến dịch</NavLink>
             <NavLink to="/canh-bao" className={navClass}>Cảnh báo</NavLink>
             <NavLink to="/minh-bach" className={navClass}>Minh bạch</NavLink>

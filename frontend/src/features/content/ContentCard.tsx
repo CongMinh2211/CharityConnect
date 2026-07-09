@@ -16,7 +16,11 @@ export function typeLabel(type: ContentArticle["type"]): string {
     TRANSPARENCY: "Minh bạch",
     ALERT: "Cảnh báo",
     DATA: "Số liệu",
-    VIDEO: "Video"
+    VIDEO: "Video",
+    REAL_PROJECT: "Dự án thật",
+    REAL_STATISTIC: "Số liệu thật",
+    SCAM_ALERT: "Cảnh báo lừa đảo",
+    FINANCIAL_REPORT: "Báo cáo tài chính",
   }[type];
 }
 
@@ -26,7 +30,7 @@ export function warningLabelText(label: NonNullable<ContentArticle["warning_labe
     OFFICIAL_WARNING: "Cơ quan chức năng cảnh báo",
     PRESS_WARNING: "Báo chí chính thống cảnh báo",
     CHECK_SIGNALS: "Dấu hiệu cần kiểm tra",
-    UNVERIFIED: "Chưa đủ căn cứ"
+    UNVERIFIED: "Chưa đủ căn cứ",
   }[label];
 }
 

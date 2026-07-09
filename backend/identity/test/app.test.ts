@@ -5,6 +5,7 @@ jest.mock("../src/db", () => ({ query: jest.fn(), audit: jest.fn(), pool: {} }))
 import { app } from "../src/app";
 import { signToken } from "../src/auth";
 import { audit, query } from "../src/db";
+import { resetRateLimit } from "../src/rateLimit";
 
 const queryMock = query as jest.MockedFunction<typeof query>;
 const auditMock = audit as jest.MockedFunction<typeof audit>;
@@ -12,7 +13,7 @@ const donorToken = signToken({ sub: "00000000-0000-0000-0000-000000000001", emai
 const orgToken = signToken({ sub: "00000000-0000-0000-0000-000000000002", email: "org@test.vn", name: "Org", role: "ORGANIZATION" });
 const adminToken = signToken({ sub: "00000000-0000-0000-0000-000000000003", email: "admin@test.vn", name: "Admin", role: "ADMIN" });
 
-beforeEach(() => { jest.clearAllMocks(); queryMock.mockResolvedValue([] as never); });
+beforeEach(() => { jest.clearAllMocks(); resetRateLimit(); queryMock.mockResolvedValue([] as never); });
 
 describe("identity HTTP API", () => {
   it("reports health and validates registration", async () => {
@@ -41,6 +42,24 @@ describe("identity HTTP API", () => {
     expect((await request(app).post("/auth/login").send({ email: "a@test.vn", password: "Password@123" })).status).toBe(200);
     queryMock.mockResolvedValueOnce([] as never);
     expect((await request(app).post("/auth/login").send({ email: "none@test.vn", password: "wrong" })).status).toBe(401);
+  });
+
+  it("rate-limits repeated login attempts from one IP with 429", async () => {
+    queryMock.mockResolvedValue([] as never);
+    let limited = false;
+    let sawRateHeader = false;
+    for (let i = 0; i < 12; i += 1) {
+      const res = await request(app).post("/auth/login").send({ email: "spam@test.vn", password: "x" });
+      if (res.headers["x-ratelimit-limit"] === "10") sawRateHeader = true;
+      if (res.status === 429) { limited = true; expect(res.headers["retry-after"]).toBeDefined(); break; }
+    }
+    expect(sawRateHeader).toBe(true);
+    expect(limited).toBe(true);
+  });
+
+  it("stamps the API version header on responses", async () => {
+    const res = await request(app).get("/health");
+    expect(res.headers["x-api-version"]).toBe("v1");
   });
 
   it("reads and updates the authenticated profile", async () => {
@@ -113,10 +132,13 @@ describe("identity HTTP API", () => {
     expect(mine.status).toBe(200);
     expect(mine.body[0].action).toBe("PASSWORD_CHANGED");
 
-    queryMock.mockResolvedValueOnce([{ id: "u1", email: "donor@test.vn", name: "Donor", role: "DONOR", status: "ACTIVE" }] as never);
+    queryMock
+      .mockResolvedValueOnce([{ count: "1" }] as never)
+      .mockResolvedValueOnce([{ id: "u1", email: "donor@test.vn", name: "Donor", role: "DONOR", status: "ACTIVE" }] as never);
     const users = await request(app).get("/admin/users?role=DONOR&status=ACTIVE").set("Authorization", `Bearer ${adminToken}`);
     expect(users.status).toBe(200);
     expect(users.body[0].email).toBe("donor@test.vn");
+    expect(users.headers["x-total-count"]).toBe("1");
 
     queryMock
       .mockResolvedValueOnce([{ id: "u1", email: "donor@test.vn", name: "Donor", role: "DONOR", status: "ACTIVE" }] as never)

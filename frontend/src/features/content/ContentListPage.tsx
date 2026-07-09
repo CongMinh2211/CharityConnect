@@ -9,7 +9,8 @@ import { ContentCard } from "./ContentCard";
 export function ContentListPage({ mode = "all" }: { mode?: "all" | "alerts" }): JSX.Element {
   const [searchParams] = useSearchParams();
   const [q, setQ] = useState(searchParams.get("q") ?? "");
-  const [type, setType] = useState<string>(mode === "alerts" ? "ALERT" : (searchParams.get("type") ?? ""));
+  const initialType = mode === "alerts" ? "SCAM_ALERT" : (searchParams.get("type") ?? "");
+  const [type, setType] = useState<string>(initialType);
   const [level, setLevel] = useState("");
   const params = useMemo(() => {
     const search = new URLSearchParams();
@@ -26,12 +27,12 @@ export function ContentListPage({ mode = "all" }: { mode?: "all" | "alerts" }): 
         <div>
           <p className="eyebrow !bg-white">{mode === "alerts" ? <AlertTriangle size={17} /> : <ShieldCheck size={17} />} {mode === "alerts" ? "Cảnh báo từ thiện giả" : "Kiểm chứng nguồn"}</p>
           <h1 className="mt-4 text-4xl font-black tracking-[-.045em] sm:text-5xl">
-            {mode === "alerts" ? "Các vụ việc cần cảnh giác" : "Nguồn chính thống và bài kiểm chứng"}
+            {mode === "alerts" ? "Các vụ việc cần cảnh giác" : "Nguồn chính thống, dự án thật và bài kiểm chứng"}
           </h1>
           <p className="mt-4 max-w-2xl leading-7 text-slate-600">
             {mode === "alerts"
               ? "Chỉ hiển thị cảnh báo có nguồn. Mỗi bài có nhãn căn cứ để tránh quy kết thiếu cơ sở."
-              : "Tra cứu tổ chức, bài viết, số liệu và nguồn minh bạch trước khi quyết định quyên góp."}
+              : "Tra cứu tổ chức, dự án, bài viết, claim số liệu và nguồn minh bạch trước khi quyết định quyên góp."}
           </p>
         </div>
         <div className="card p-4">
@@ -46,17 +47,21 @@ export function ContentListPage({ mode = "all" }: { mode?: "all" | "alerts" }): 
             <Select label="Loại bài" value={type} onChange={setType} disabled={mode === "alerts"} options={[
               { value: "", label: "Tất cả" },
               { value: "ORGANIZATION", label: "Tổ chức" },
+              { value: "REAL_PROJECT", label: "Dự án thật" },
+              { value: "REAL_STATISTIC", label: "Số liệu thật" },
+              { value: "FINANCIAL_REPORT", label: "Báo cáo tài chính" },
               { value: "TRANSPARENCY", label: "Minh bạch" },
+              { value: "SCAM_ALERT", label: "Cảnh báo lừa đảo" },
               { value: "ALERT", label: "Cảnh báo" },
               { value: "DATA", label: "Số liệu" },
               { value: "VIDEO", label: "Video" },
             ] satisfies Array<{ value: "" | ContentArticleType; label: string }>} />
             <Select label="Cấp nguồn" value={level} onChange={setLevel} options={[
               { value: "", label: "Mọi cấp" },
-              { value: "A", label: "A - Nhà nước" },
+              { value: "A", label: "A - Chính thống" },
               { value: "B", label: "B - Báo chí" },
-              { value: "C", label: "C - Tổ chức" },
-              { value: "D", label: "D - Manh mối" },
+              { value: "C", label: "C - Tự công bố" },
+              { value: "D", label: "D - Cần kiểm tra" },
             ] satisfies Array<{ value: "" | ContentSourceLevel; label: string }>} />
           </div>
         </div>

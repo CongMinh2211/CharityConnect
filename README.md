@@ -111,7 +111,7 @@ Gateway công khai dưới `/api/v1`:
 - Impact: `/campaigns/{id}/impact-reports`, `/organization/campaigns/{id}/impact-reports`, `/admin/impact-reports/*`
 - Donation: `/donations/*`, `/organization/donations/*`, `/transparency/*`
 - Assistant: `/assistant/chat`, `/assistant/capabilities`, `/assistant/role-guide`, `/assistant/analyze-source`
-- Content Verify: `/content/home`, `/content/articles`, `/content/alerts`, `/content/sources`, `/content/kpis`
+- Content Verify: `/content/home`, `/content/articles`, `/content/alerts`, `/content/sources`, `/content/kpis`, `/content/projects`, `/content/metrics`, `/content/statistics`
 
 OpenAPI:
 

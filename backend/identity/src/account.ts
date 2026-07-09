@@ -6,7 +6,12 @@ import { authenticate, authorize } from "./auth";
 import { audit, query } from "./db";
 import { isPasswordReused, updatePasswordWithHistory } from "./passwords";
 import { revokeAllRefreshTokens } from "./tokens";
+import { rateLimit } from "./rateLimit";
 import type { AuthRequest, Role } from "./types";
+
+// Chống lạm dụng đặt lại mật khẩu (dò email / spam gửi mail) theo IP.
+const resetRequestLimiter = rateLimit({ windowMs: 15 * 60_000, max: 5, scope: "pwd-reset-request", message: "Bạn yêu cầu đặt lại mật khẩu quá nhiều lần. Vui lòng thử lại sau." });
+const resetConfirmLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, scope: "pwd-reset-confirm", message: "Quá nhiều lần thử. Vui lòng thử lại sau." });
 
 const profileSchema = z.object({ name: z.string().trim().min(2).max(120) });
 const changePasswordSchema = z.object({
@@ -70,7 +75,7 @@ accountRouter.post("/auth/change-password", authenticate, async (req: AuthReques
   } catch (error) { next(error); }
 });
 
-accountRouter.post("/auth/password-reset/request", async (req, res, next) => {
+accountRouter.post("/auth/password-reset/request", resetRequestLimiter, async (req, res, next) => {
   try {
     const input = resetRequestSchema.parse(req.body);
     const users = await query<{ id: string; email: string; name: string }>(
@@ -98,7 +103,7 @@ accountRouter.post("/auth/password-reset/request", async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-accountRouter.post("/auth/password-reset/confirm", async (req, res, next) => {
+accountRouter.post("/auth/password-reset/confirm", resetConfirmLimiter, async (req, res, next) => {
   try {
     const input = resetConfirmSchema.parse(req.body);
     const tokenHash = sha256(input.token);
@@ -172,13 +177,21 @@ accountRouter.get("/admin/users", authenticate, authorize("ADMIN"), async (req, 
   try {
     const role = z.enum(["DONOR", "ORGANIZATION", "ADMIN"]).optional().parse(req.query.role);
     const status = z.enum(["ACTIVE", "DISABLED"]).optional().parse(req.query.status);
+    const limit = z.coerce.number().int().min(1).max(200).default(100).parse(req.query.limit);
+    const offset = z.coerce.number().int().min(0).default(0).parse(req.query.offset);
+    const totalRows = await query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM users
+       WHERE ($1::user_role IS NULL OR role=$1) AND ($2::user_status IS NULL OR status=$2)`,
+      [role ?? null, status ?? null],
+    );
     const rows = await query(
       `SELECT id,email,name,role,COALESCE(status::text,'ACTIVE') AS status,created_at,updated_at
        FROM users
        WHERE ($1::user_role IS NULL OR role=$1) AND ($2::user_status IS NULL OR status=$2)
-       ORDER BY created_at DESC`,
-      [role ?? null, status ?? null],
+       ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
+      [role ?? null, status ?? null, limit, offset],
     );
+    res.setHeader("X-Total-Count", totalRows[0]?.count ?? "0");
     res.json(rows);
   } catch (error) { next(error); }
 });

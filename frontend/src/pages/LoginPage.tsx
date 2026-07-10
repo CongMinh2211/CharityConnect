@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { GoogleSignInButton } from "../components/GoogleSignInButton";
-import { api, isMockMode } from "../lib/api";
+import { api } from "../lib/api";
 import type { AuthPayload } from "../types";
 
 const quickAccounts = [
@@ -22,7 +22,7 @@ export function LoginPage(): JSX.Element {
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID) && !isMockMode;
+  const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
   const finishLogin = (payload: AuthPayload) => { login(payload); navigate(dashboardFor(payload.user.role)); };
   const mutation = useMutation({
     mutationFn: () => api<AuthPayload>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),

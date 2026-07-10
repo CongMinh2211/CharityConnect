@@ -12,7 +12,7 @@ interface OrganizationProfile {
   rejection_reason?: string | null;
 }
 
-interface MockUser extends User { password: string }
+interface MockUser extends User { password: string; google_subject?: string }
 
 interface MockState {
   users: MockUser[];
@@ -434,8 +434,24 @@ function publicCampaigns(state: MockState): Campaign[] {
 function createId(prefix: string): string { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`; }
 
 function safeUser(user: MockUser): User {
-  const { password: _password, ...value } = user;
+  const { password: _password, google_subject: _googleSubject, ...value } = user;
   return value;
+}
+
+function decodeGoogleCredential(credential: string): { sub: string; email: string; name: string } {
+  try {
+    const encoded = credential.split(".")[1];
+    if (!encoded) throw new Error("missing payload");
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+    const bytes = Uint8Array.from(atob(normalized), (character) => character.charCodeAt(0));
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as { sub?: string; email?: string; name?: string; aud?: string; exp?: number; email_verified?: boolean };
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    if (!payload.sub || !payload.email || payload.email_verified !== true || (payload.exp ?? 0) * 1000 <= Date.now()) throw new Error("invalid claims");
+    if (clientId && payload.aud !== clientId) throw new Error("invalid audience");
+    return { sub: payload.sub, email: payload.email.toLowerCase(), name: payload.name?.trim() || payload.email.split("@")[0] };
+  } catch {
+    throw Object.assign(new Error("Không thể xác thực thông tin đăng nhập Google."), { status: 401 });
+  }
 }
 
 function createSession(state: MockState, user: MockUser): AccountSession {
@@ -1197,6 +1213,32 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       campaign_id: entry.campaign_id,
       public_payload: entry.public_payload
     } as T;
+  }
+
+  if (pathname === "/auth/google" && method === "POST") {
+    if (body.terms_accepted !== true) throw Object.assign(new Error("Bạn cần đồng ý điều khoản sử dụng."), { status: 400 });
+    const identity = decodeGoogleCredential(String(body.credential ?? ""));
+    let user = state.users.find((item) => item.google_subject === identity.sub || item.email.toLowerCase() === identity.email);
+    if (user?.status === "DISABLED") throw Object.assign(new Error("Tài khoản đã bị khóa."), { status: 403 });
+    if (!user) {
+      const role = body.role === "ORGANIZATION" ? "ORGANIZATION" : "DONOR";
+      user = {
+        id: createId("google-user"), email: identity.email, name: String(body.name || identity.name), role, status: "ACTIVE",
+        password: createId("google-password"), google_subject: identity.sub,
+        phone: body.phone ? String(body.phone) : null, province: body.province ? String(body.province) : null,
+        address: body.address ? String(body.address) : null, date_of_birth: body.date_of_birth ? String(body.date_of_birth) : null,
+        organization_name: body.organization_name ? String(body.organization_name) : null,
+      };
+      state.users.push(user);
+      state.emailNotifications.push({ event_id: user.id, template: "WELCOME", recipient_user_id: user.id, status: "SIMULATED" });
+      pushAuditForUser(state, user.id, "GOOGLE_ACCOUNT_CREATED", "USER", user.id, "IDENTITY", { provider: "GOOGLE" });
+    } else {
+      user.google_subject = identity.sub;
+      pushAuditForUser(state, user.id, "GOOGLE_LOGIN_SUCCEEDED", "USER", user.id, "IDENTITY", { provider: "GOOGLE" });
+    }
+    createSession(state, user);
+    saveState(state);
+    return { token: `google-local-token-${user.id}`, user: safeUser(user), email_notification: "QUEUED" } as T;
   }
 
   if (pathname === "/auth/login" && method === "POST") {

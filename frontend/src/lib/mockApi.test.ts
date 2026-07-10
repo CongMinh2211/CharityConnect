@@ -19,6 +19,16 @@ Object.defineProperty(globalThis, "location", { value: { origin: "http://localho
 
 function actAs(user: User): void { localStorage.setItem("cc_user", JSON.stringify(user)); }
 
+function googleCredential(payload: Record<string, unknown>): string {
+  const encode = (value: Record<string, unknown>) => {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    let binary = "";
+    bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  };
+  return `${encode({ alg: "RS256", typ: "JWT" })}.${encode(payload)}.local-signature`;
+}
+
 describe("mock API demo flows", () => {
   beforeEach(() => { storage.clear(); resetMockData(); });
 
@@ -34,6 +44,16 @@ describe("mock API demo flows", () => {
       const result = await mockApi<AuthPayload>("/auth/login", { method: "POST", body: JSON.stringify({ email, password: "Demo@123" }) });
       expect(result.user.email).toBe(email);
     }
+  });
+
+  it("creates a local profile after Google account selection", async () => {
+    const credential = googleCredential({
+      sub: "google-test-subject", email: "google.user@gmail.com", name: "Google User", email_verified: true,
+      exp: Math.floor(Date.now() / 1000) + 600,
+    });
+    const result = await mockApi<AuthPayload>("/auth/google", { method: "POST", body: JSON.stringify({ credential, terms_accepted: true, role: "DONOR" }) });
+    expect(result.user).toMatchObject({ email: "google.user@gmail.com", name: "Google User", role: "DONOR" });
+    expect(result.token).toContain("google-local-token");
   });
 
   it("answers assistant questions without an API key", async () => {

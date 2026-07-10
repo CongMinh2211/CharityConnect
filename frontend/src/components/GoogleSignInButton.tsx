@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from "react";
-import { isMockMode } from "../lib/api";
 
 type GoogleCredentialResponse = { credential: string };
 
@@ -46,7 +45,7 @@ export function GoogleSignInButton({ onCredential, disabled = false, mode = "sig
   useEffect(() => { onCredentialRef.current = onCredential; }, [onCredential]);
 
   useEffect(() => {
-    if (!clientId || isMockMode || !host.current) return;
+    if (!clientId || !host.current) return;
     let cancelled = false;
     void loadGoogleIdentityScript().then(() => {
       if (cancelled || !host.current || !window.google?.accounts.id) return;
@@ -65,8 +64,7 @@ export function GoogleSignInButton({ onCredential, disabled = false, mode = "sig
     return () => { cancelled = true; };
   }, [clientId, disabled, mode]);
 
-  // Mock mode intentionally does not accept a Google token: only the backend can verify it.
-  if (!clientId || isMockMode) return null;
+  if (!clientId) return null;
   return <div className={disabled ? "pointer-events-none opacity-50" : ""}>
     <div ref={host} className="flex min-h-11 w-full justify-center" aria-label="Đăng nhập bằng Google" />
     {error && <p className="mt-2 text-center text-xs font-semibold text-rose-700" role="alert">{error}</p>}

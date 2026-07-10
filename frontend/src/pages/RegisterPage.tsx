@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { GoogleSignInButton } from "../components/GoogleSignInButton";
-import { api, isMockMode } from "../lib/api";
+import { api } from "../lib/api";
 import type { AuthPayload, Role } from "../types";
 
 type RegisterRole = Exclude<Role, "ADMIN">;
@@ -17,7 +17,7 @@ export function RegisterPage(): JSX.Element {
     password: "", confirmPassword: "", role: "DONOR" as RegisterRole, terms_accepted: false,
   });
   const [validationError, setValidationError] = useState("");
-  const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID) && !isMockMode;
+  const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
   const profilePayload = () => ({
     name: form.name, phone: form.phone, province: form.province, address: form.address,
     date_of_birth: form.role === "DONOR" && form.date_of_birth ? form.date_of_birth : undefined,

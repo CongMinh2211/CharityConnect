@@ -62,6 +62,10 @@ export async function api<T>(path: string, options: RequestInit = {}, retried = 
   if (response.status === 401 && !retried && !path.startsWith("/auth/") && await refreshAccessToken()) {
     return api<T>(path, options, true);
   }
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new ApiError("Máy chủ API đang cấu hình sai hoặc chưa được triển khai.", 502);
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(payload.message ?? payload.detail ?? "Không thể xử lý yêu cầu", response.status);
   return payload as T;

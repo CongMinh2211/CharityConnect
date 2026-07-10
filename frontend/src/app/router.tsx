@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { createBrowserRouter } from "react-router-dom";
 import { AuthGuard } from "../auth/AuthGuard";
 import { AppShell } from "./AppShell";
+import { RouteErrorPage } from "../shared/components/RouteErrorPage";
 
 const CampaignListPage = lazy(() => import("../features/campaigns/CampaignListPage").then((module) => ({ default: module.CampaignListPage })));
 const VerifyHomePage = lazy(() => import("../features/content/VerifyHomePage").then((module) => ({ default: module.VerifyHomePage })));
@@ -42,6 +43,7 @@ function RootRoute(): JSX.Element {
 export const router = createBrowserRouter([
   {
     element: <RootRoute />,
+    errorElement: <RouteErrorPage />,
     children: [
       // Public routes: mọi người đều xem được.
       { index: true, element: <VerifyHomePage /> },

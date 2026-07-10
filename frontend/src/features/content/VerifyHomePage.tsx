@@ -36,7 +36,9 @@ export function VerifyHomePage(): JSX.Element {
   const [searchTerm, setSearchTerm] = useState("");
 
   if (home.isLoading) return <div className="container-page py-12"><div className="skeleton h-[480px]" /></div>;
-  if (home.isError || !home.data) return <div className="container-page py-12"><div className="card p-6 text-rose-700">Không thể tải dữ liệu kiểm chứng. Vui lòng thử lại.</div></div>;
+  if (home.isError || !home.data?.kpis || !Array.isArray(home.data.featured) || !Array.isArray(home.data.alerts) || !Array.isArray(home.data.videos) || !Array.isArray(home.data.sources)) {
+    return <div className="container-page py-12"><div className="card p-6"><h1 className="text-xl font-black text-ink">Chưa kết nối được máy chủ dữ liệu</h1><p className="mt-2 text-sm leading-6 text-rose-700">API chưa được triển khai hoặc địa chỉ API chưa đúng. Quản trị viên có thể bật lại dữ liệu cục bộ để website tiếp tục hoạt động.</p><button type="button" className="btn-secondary mt-5" onClick={() => home.refetch()}>Thử tải lại</button></div></div>;
+  }
 
   const { kpis, featured, alerts, videos, sources, projects = [], statistics } = home.data;
 

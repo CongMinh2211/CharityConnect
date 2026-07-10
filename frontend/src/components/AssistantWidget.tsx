@@ -14,8 +14,8 @@ interface ChatMessage {
   scope?: "INTERNAL" | "EXTERNAL_WEB";
 }
 
-const welcome: ChatMessage = { role: "assistant", content: "Chào bạn! Mình ưu tiên dữ liệu CharityConnect. Nếu câu hỏi nằm ngoài website, mình có thể tìm nguồn công khai khi AI search được cấu hình." };
-const initialSuggestions = ["Cách đăng nhập?", "Cách xác minh biên nhận?", "Thống kê toàn dân ở đâu?"];
+const welcome: ChatMessage = { role: "assistant", content: "Chào bạn 👋 Mình là trợ lý CharityConnect. Bạn muốn kiểm tra một nguồn từ thiện có đáng tin không, quyên góp minh bạch, hay xem thống kê? Cứ hỏi mình nhé." };
+const initialSuggestions = ["Kiểm tra một link kêu gọi", "Cách quyên góp?", "Tóm tắt thống kê"];
 
 export function AssistantWidget(): JSX.Element {
   const { user } = useAuth();

@@ -242,7 +242,7 @@ def test_rejects_invalid_payload_limits():
         ("thống kê biểu đồ", "Thống kê"),
         ("báo cáo tổ chức", "1–5"),
         ("admin kiểm duyệt", "Merkle"),
-        ("xin chào", "Mình có thể"),
+        ("xin chào", "trợ lý CharityConnect"),
     ],
 )
 def test_offline_topics_cover_core_roles(question, expected):

@@ -49,6 +49,30 @@ describe("mock API demo flows", () => {
     expect(guide.locked_actions.some((action) => action.path.includes("/quan-tri"))).toBe(true);
   });
 
+  it("answers polished assistant intents for core user actions", async () => {
+    const cases: Array<{ message: string; expected: string; action?: string }> = [
+      { message: "hi", expected: "CharityConnect", action: "/kiem-tra-nguon" },
+      { message: "ban la ai", expected: "nói không với từ thiện giả", action: "/kiem-chung" },
+      { message: "kiem tra link keu goi co dang tin khong", expected: "chấm điểm minh bạch", action: "/kiem-tra-nguon" },
+      { message: "dang nhap nhu nao", expected: "ba vai trò", action: "/dang-nhap" },
+      { message: "toi muon quyen gop", expected: "biên nhận CC", action: "/chien-dich" },
+      { message: "to chuc tao chien dich", expected: "ngân sách và mốc tiến độ", action: "/to-chuc" },
+      { message: "admin kiem duyet", expected: "risk score", action: "/quan-tri" },
+      { message: "cam on", expected: "Rất vui được giúp" },
+    ];
+
+    for (const item of cases) {
+      const result = await mockApi<AssistantResponse>("/assistant/chat", {
+        method: "POST",
+        body: JSON.stringify({ message: item.message }),
+      });
+      expect(result.mode).toBe("DEMO");
+      expect(result.scope).toBe("INTERNAL");
+      expect(result.answer).toContain(item.expected);
+      if (item.action) expect(result.actions.some((action) => action.path === item.action)).toBe(true);
+    }
+  });
+
   it("answers external weather with public sources in static mode", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {

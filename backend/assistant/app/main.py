@@ -165,7 +165,7 @@ def offline_answer(message: str) -> str:
     folded = fold(message)
     stripped = folded.strip(" !?.")
     if stripped in GREETING_TOKENS or any(stripped.startswith(g + " ") for g in GREETING_TOKENS):
-        return "Chào bạn! Mình là trợ lý CharityConnect. Mình có thể hướng dẫn quyên góp, biên nhận, TrustChain minh bạch, thống kê và dashboard theo từng vai trò. Bạn cần hỗ trợ phần nào?"
+        return "Chào bạn 👋 Mình là trợ lý CharityConnect. Bạn muốn kiểm tra một nguồn từ thiện có đáng tin không, quyên góp minh bạch, hay xem thống kê? Cứ hỏi mình nhé."
     if any(token in folded for token in THANKS_TOKENS):
         return "Rất vui được hỗ trợ bạn! Nếu cần, mình có thể hướng dẫn tiếp về quyên góp, xác minh biên nhận hoặc sổ cái minh bạch."
     # Specific knowledge nuggets that do not map cleanly to a single intent.

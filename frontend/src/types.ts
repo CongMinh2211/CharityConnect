@@ -8,7 +8,18 @@ export type ReceiptVerificationStatus = "CONFIRMED" | "UNANCHORED" | "INVALID";
 export type ContractState = "CREATED" | "APPROVED" | "DONATION_OPEN" | "FUND_LOCKED" | "USAGE_SUBMITTED" | "USAGE_VERIFIED" | "FUND_RELEASED" | "CLOSED";
 
 export type UserStatus = "ACTIVE" | "DISABLED";
-export interface User { id: string; email: string; name: string; role: Role; status?: UserStatus }
+export interface User {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  status?: UserStatus;
+  phone?: string | null;
+  province?: string | null;
+  address?: string | null;
+  date_of_birth?: string | null;
+  organization_name?: string | null;
+}
 export interface AuthPayload { token: string; refresh_token?: string; user: User; email_notification?: "QUEUED" }
 export interface AccountSession {
   id: string; user_agent?: string | null; ip_address?: string | null; created_at: string;

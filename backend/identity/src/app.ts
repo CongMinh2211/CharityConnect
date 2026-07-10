@@ -5,6 +5,7 @@ import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { collectDefaultMetrics, Counter, Histogram, register } from "prom-client";
+import { OAuth2Client } from "google-auth-library";
 import { z } from "zod";
 import { audit, query } from "./db";
 import { authenticate, authorize, internalOnly, signToken } from "./auth";
@@ -30,15 +31,68 @@ const uploadDir = process.env.UPLOAD_DIR ?? path.resolve("uploads");
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ dest: uploadDir, limits: { fileSize: 10 * 1024 * 1024 } });
 
+const profileContactFields = {
+  phone: z.string().trim().regex(/^\+?[0-9][0-9\s-]{7,18}$/, "Số điện thoại không hợp lệ").optional(),
+  province: z.string().trim().min(2).max(120).optional(),
+  address: z.string().trim().min(4).max(300).optional(),
+  date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Ngày sinh phải có dạng YYYY-MM-DD").optional(),
+  organization_name: z.string().trim().min(2).max(200).optional(),
+};
 const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().trim().min(2).max(120),
   role: z.enum(["DONOR", "ORGANIZATION"]),
-  terms_accepted: z.literal(true)
+  terms_accepted: z.literal(true),
+  ...profileContactFields,
+}).superRefine((input, context) => {
+  if (input.role === "ORGANIZATION" && !input.organization_name) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["organization_name"], message: "Vui lòng nhập tên tổ chức." });
+  }
 });
 const loginSchema = z.object({ email: z.string().email(), password: z.string().min(1) });
+const googleLoginSchema = z.object({
+  credential: z.string().min(20),
+  role: z.enum(["DONOR", "ORGANIZATION"]).default("DONOR"),
+  terms_accepted: z.literal(true),
+  name: z.string().trim().min(2).max(120).optional(),
+  ...profileContactFields,
+});
 const preferenceSchema = z.object({ saved: z.boolean(), following: z.boolean() });
+const googleClient = new OAuth2Client();
+
+type GoogleIdentity = {
+  subject: string;
+  email: string;
+  name: string;
+  emailIsAuthoritative: boolean;
+};
+
+class GoogleAuthenticationError extends Error {
+  constructor(message: string, public readonly status = 401) {
+    super(message);
+  }
+}
+
+async function verifyGoogleCredential(credential: string): Promise<GoogleIdentity> {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) throw new GoogleAuthenticationError("Đăng nhập Google chưa được cấu hình trên máy chủ.", 503);
+
+  try {
+    const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: clientId });
+    const payload = ticket.getPayload();
+    const subject = payload?.sub;
+    const email = payload?.email?.toLowerCase();
+    if (!subject || !email || payload.email_verified !== true) {
+      throw new GoogleAuthenticationError("Tài khoản Google chưa xác thực email.");
+    }
+    const emailIsAuthoritative = email.endsWith("@gmail.com") || Boolean(payload.hd);
+    return { subject, email, name: payload.name?.trim() || email.split("@")[0], emailIsAuthoritative };
+  } catch (error) {
+    if (error instanceof GoogleAuthenticationError) throw error;
+    throw new GoogleAuthenticationError("Không thể xác minh thông tin đăng nhập Google.");
+  }
+}
 
 export const app = express();
 app.use(securityHeaders);
@@ -88,16 +142,17 @@ app.post("/auth/register", registerLimiter, async (req, res, next) => {
   try {
     const input = registerSchema.parse(req.body);
     const passwordHash = await bcrypt.hash(input.password, 12);
-    const rows = await query<{ id: string; email: string; name: string; role: Role }>(
+    const rows = await query<{ id: string; email: string; name: string; role: Role; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
       `WITH new_user AS (
-         INSERT INTO users(email,password_hash,name,role,terms_accepted_at) VALUES($1,$2,$3,$4,now())
-         RETURNING id,email,name,role
+         INSERT INTO users(email,password_hash,name,role,phone,province,address,date_of_birth,organization_name,terms_accepted_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,now())
+         RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name
        ), queued AS (
          INSERT INTO email_outbox(event_id,template,recipient_user_id,payload)
          SELECT id::text,'WELCOME',id,jsonb_build_object('role',role) FROM new_user
        )
-       SELECT id,email,name,role FROM new_user`,
-      [input.email.toLowerCase(), passwordHash, input.name, input.role]
+        SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name FROM new_user`,
+      [input.email.toLowerCase(), passwordHash, input.name, input.role, input.phone ?? null, input.province ?? null, input.address ?? null, input.date_of_birth ?? null, input.organization_name ?? null]
     );
     const user = rows[0];
     const sessionId = await createAccountSession(user.id, req);
@@ -115,8 +170,8 @@ app.post("/auth/register", registerLimiter, async (req, res, next) => {
 app.post("/auth/login", loginLimiter, async (req, res, next) => {
   try {
     const input = loginSchema.parse(req.body);
-    const rows = await query<{ id: string; email: string; name: string; role: Role; password_hash: string; status?: "ACTIVE" | "DISABLED" }>(
-      "SELECT id,email,name,role,password_hash,COALESCE(status::text,'ACTIVE') AS status FROM users WHERE email=$1",
+    const rows = await query<{ id: string; email: string; name: string; role: Role; password_hash: string | null; status?: "ACTIVE" | "DISABLED"; phone?: string | null; province?: string | null; address?: string | null; date_of_birth?: string | null; organization_name?: string | null }>(
+      "SELECT id,email,name,role,password_hash,phone,province,address,date_of_birth,organization_name,COALESCE(status::text,'ACTIVE') AS status FROM users WHERE email=$1",
       [input.email.toLowerCase()]
     );
     const user = rows[0];
@@ -129,7 +184,7 @@ app.post("/auth/login", loginLimiter, async (req, res, next) => {
       res.status(423).json({ message: `Tài khoản tạm khóa do đăng nhập sai nhiều lần. Thử lại sau ${lock.remainingMinutes} phút.` });
       return;
     }
-    if (!(await bcrypt.compare(input.password, user.password_hash))) {
+    if (!user.password_hash || !(await bcrypt.compare(input.password, user.password_hash))) {
       const lockedNow = await registerFailedLogin(user.id);
       if (lockedNow) {
         await audit(user.id, "ACCOUNT_LOCKED", "USER", user.id, null, { cause: "TOO_MANY_FAILED_LOGINS" }, {
@@ -156,6 +211,87 @@ app.post("/auth/login", loginLimiter, async (req, res, next) => {
       user: safeUser,
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/auth/google", loginLimiter, async (req, res, next) => {
+  try {
+    const input = googleLoginSchema.parse(req.body);
+    const identity = await verifyGoogleCredential(input.credential);
+    const matched = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
+      "SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,COALESCE(status::text,'ACTIVE') AS status FROM users WHERE google_subject=$1",
+      [identity.subject],
+    );
+    let user = matched[0];
+    let created = false;
+
+    if (!user) {
+      const existingEmail = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; google_subject: string | null }>(
+        "SELECT id,email,name,role,COALESCE(status::text,'ACTIVE') AS status,google_subject FROM users WHERE email=$1",
+        [identity.email],
+      );
+      const existing = existingEmail[0];
+      if (existing?.status === "DISABLED") {
+        res.status(403).json({ message: "Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên." });
+        return;
+      }
+      if (existing?.google_subject) {
+        res.status(409).json({ message: "Tài khoản Google này đã được liên kết với một người dùng khác." });
+        return;
+      }
+      if (existing && !identity.emailIsAuthoritative) {
+        res.status(409).json({ message: "Email này đã có tài khoản. Hãy đăng nhập bằng mật khẩu trước để bảo vệ tài khoản." });
+        return;
+      }
+      if (existing) {
+        const linked = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
+          "UPDATE users SET google_subject=$1,updated_at=now() WHERE id=$2 AND google_subject IS NULL RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name,COALESCE(status::text,'ACTIVE') AS status",
+          [identity.subject, existing.id],
+        );
+        user = linked[0];
+        if (!user) {
+          res.status(409).json({ message: "Không thể liên kết Google với tài khoản này." });
+          return;
+        }
+        await audit(user.id, "GOOGLE_ACCOUNT_LINKED", "USER", user.id, null, { provider: "GOOGLE" }, { actorRole: user.role, ip: req.ip, userAgent: req.headers["user-agent"] as string | undefined });
+      } else {
+        const createdRows = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
+          `WITH new_user AS (
+             INSERT INTO users(email,password_hash,name,role,google_subject,phone,province,address,date_of_birth,organization_name,terms_accepted_at)
+             VALUES($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,now())
+             RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name,COALESCE(status::text,'ACTIVE') AS status
+           ), queued AS (
+             INSERT INTO email_outbox(event_id,template,recipient_user_id,payload)
+             SELECT id::text,'WELCOME',id,jsonb_build_object('role',role,'provider','GOOGLE') FROM new_user
+           ) SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,status FROM new_user`,
+          [identity.email, input.name ?? identity.name, input.role, identity.subject, input.phone ?? null, input.province ?? null, input.address ?? null, input.date_of_birth ?? null, input.organization_name ?? null],
+        );
+        user = createdRows[0];
+        created = true;
+      }
+    }
+
+    if (!user || user.status === "DISABLED") {
+      res.status(403).json({ message: "Tài khoản đã bị khóa. Vui lòng liên hệ quản trị viên." });
+      return;
+    }
+    const sessionId = await createAccountSession(user.id, req);
+    const refreshToken = await issueRefreshToken(user.id, sessionId);
+    await audit(user.id, created ? "GOOGLE_ACCOUNT_CREATED" : "GOOGLE_LOGIN_SUCCEEDED", "USER", user.id, null, { provider: "GOOGLE", session_id: sessionId }, {
+      actorRole: user.role, ip: req.ip, userAgent: req.headers["user-agent"] as string | undefined,
+    });
+    res.status(created ? 201 : 200).json({
+      token: signToken({ sub: user.id, email: user.email, name: user.name, role: user.role, session_id: sessionId }),
+      refresh_token: refreshToken,
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, status: user.status, phone: user.phone, province: user.province, address: user.address, date_of_birth: user.date_of_birth, organization_name: user.organization_name },
+      ...(created ? { email_notification: "QUEUED" } : {}),
+    });
+  } catch (error) {
+    if (error instanceof GoogleAuthenticationError) {
+      res.status(error.status).json({ message: error.message });
+      return;
+    }
     next(error);
   }
 });
@@ -194,7 +330,7 @@ app.post("/auth/logout", async (req, res, next) => {
 
 app.get("/profile", authenticate, async (req: AuthRequest, res, next) => {
   try {
-    const rows = await query("SELECT id,email,name,role,created_at FROM users WHERE id=$1", [req.user!.sub]);
+    const rows = await query("SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,created_at FROM users WHERE id=$1", [req.user!.sub]);
     res.json(rows[0]);
   } catch (error) { next(error); }
 });
@@ -202,7 +338,7 @@ app.get("/profile", authenticate, async (req: AuthRequest, res, next) => {
 app.put("/profile", authenticate, async (req: AuthRequest, res, next) => {
   try {
     const name = z.string().trim().min(2).max(120).parse(req.body.name);
-    const rows = await query("UPDATE users SET name=$1,updated_at=now() WHERE id=$2 RETURNING id,email,name,role", [name, req.user!.sub]);
+    const rows = await query("UPDATE users SET name=$1,updated_at=now() WHERE id=$2 RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name", [name, req.user!.sub]);
     res.json(rows[0]);
   } catch (error) { next(error); }
 });

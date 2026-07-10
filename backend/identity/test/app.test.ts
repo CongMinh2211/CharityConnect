@@ -1,6 +1,10 @@
 import request from "supertest";
 
 jest.mock("../src/db", () => ({ query: jest.fn(), audit: jest.fn(), pool: {} }));
+const mockVerifyIdToken = jest.fn();
+jest.mock("google-auth-library", () => ({
+  OAuth2Client: jest.fn(() => ({ verifyIdToken: mockVerifyIdToken })),
+}));
 
 import { app } from "../src/app";
 import { signToken } from "../src/auth";
@@ -13,7 +17,7 @@ const donorToken = signToken({ sub: "00000000-0000-0000-0000-000000000001", emai
 const orgToken = signToken({ sub: "00000000-0000-0000-0000-000000000002", email: "org@test.vn", name: "Org", role: "ORGANIZATION" });
 const adminToken = signToken({ sub: "00000000-0000-0000-0000-000000000003", email: "admin@test.vn", name: "Admin", role: "ADMIN" });
 
-beforeEach(() => { jest.clearAllMocks(); resetRateLimit(); queryMock.mockResolvedValue([] as never); });
+beforeEach(() => { jest.clearAllMocks(); resetRateLimit(); delete process.env.GOOGLE_CLIENT_ID; queryMock.mockResolvedValue([] as never); });
 
 describe("identity HTTP API", () => {
   it("reports health and validates registration", async () => {
@@ -30,7 +34,7 @@ describe("identity HTTP API", () => {
 
   it("registers a donor and returns a JWT", async () => {
     queryMock.mockResolvedValueOnce([{ id: "u1", email: "new@test.vn", name: "New", role: "DONOR" }] as never);
-    const response = await request(app).post("/auth/register").send({ email: "new@test.vn", password: "Password@123", name: "New", role: "DONOR", terms_accepted: true });
+    const response = await request(app).post("/auth/register").send({ email: "new@test.vn", password: "Password@123", name: "New", phone: "0901234567", province: "Đà Nẵng", address: "12 Hải Châu", date_of_birth: "2001-01-20", role: "DONOR", terms_accepted: true });
     expect(response.status).toBe(201);
     expect(response.body.token).toEqual(expect.any(String));
   });
@@ -42,6 +46,58 @@ describe("identity HTTP API", () => {
     expect((await request(app).post("/auth/login").send({ email: "a@test.vn", password: "Password@123" })).status).toBe(200);
     queryMock.mockResolvedValueOnce([] as never);
     expect((await request(app).post("/auth/login").send({ email: "none@test.vn", password: "wrong" })).status).toBe(401);
+  });
+
+  it("verifies a Google ID token server-side before creating a donor session", async () => {
+    process.env.GOOGLE_CLIENT_ID = "google-client-id.apps.googleusercontent.com";
+    mockVerifyIdToken.mockResolvedValueOnce({
+      getPayload: () => ({ sub: "google-subject-1", email: "mai@gmail.com", email_verified: true, name: "Mai An" }),
+    });
+    queryMock
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([{ id: "u-google", email: "mai@gmail.com", name: "Mai An", role: "DONOR", status: "ACTIVE" }] as never);
+
+    const response = await request(app).post("/auth/google").send({ credential: "x".repeat(30), terms_accepted: true });
+    expect(response.status).toBe(201);
+    expect(response.body.user).toMatchObject({ email: "mai@gmail.com", role: "DONOR" });
+    expect(response.body.refresh_token).toEqual(expect.any(String));
+    expect(mockVerifyIdToken).toHaveBeenCalledWith(expect.objectContaining({ audience: process.env.GOOGLE_CLIENT_ID }));
+    expect(auditMock).toHaveBeenCalledWith("u-google", "GOOGLE_ACCOUNT_CREATED", "USER", "u-google", null, expect.any(Object), expect.any(Object));
+  });
+
+  it("does not accept a Google credential while server configuration is absent", async () => {
+    const response = await request(app).post("/auth/google").send({ credential: "x".repeat(30), terms_accepted: true });
+    expect(response.status).toBe(503);
+  });
+
+  it("links an existing account only after Google provides an authoritative email", async () => {
+    process.env.GOOGLE_CLIENT_ID = "google-client-id.apps.googleusercontent.com";
+    mockVerifyIdToken.mockResolvedValueOnce({
+      getPayload: () => ({ sub: "google-subject-existing", email: "linh@gmail.com", email_verified: true, name: "Linh" }),
+    });
+    queryMock
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([{ id: "u-existing", email: "linh@gmail.com", name: "Linh cũ", role: "DONOR", status: "ACTIVE", google_subject: null }] as never)
+      .mockResolvedValueOnce([{ id: "u-existing", email: "linh@gmail.com", name: "Linh cũ", role: "DONOR", status: "ACTIVE" }] as never);
+
+    const response = await request(app).post("/auth/google").send({ credential: "x".repeat(30), terms_accepted: true });
+    expect(response.status).toBe(200);
+    expect(response.body.user.id).toBe("u-existing");
+    expect(auditMock).toHaveBeenCalledWith("u-existing", "GOOGLE_ACCOUNT_LINKED", "USER", "u-existing", null, expect.any(Object), expect.any(Object));
+    expect(auditMock).toHaveBeenCalledWith("u-existing", "GOOGLE_LOGIN_SUCCEEDED", "USER", "u-existing", null, expect.any(Object), expect.any(Object));
+  });
+
+  it("rejects invalid Google identities and disabled Google accounts", async () => {
+    process.env.GOOGLE_CLIENT_ID = "google-client-id.apps.googleusercontent.com";
+    mockVerifyIdToken.mockRejectedValueOnce(new Error("bad token"));
+    expect((await request(app).post("/auth/google").send({ credential: "x".repeat(30), terms_accepted: true })).status).toBe(401);
+
+    mockVerifyIdToken.mockResolvedValueOnce({
+      getPayload: () => ({ sub: "google-subject-disabled", email: "khoa@gmail.com", email_verified: true, name: "Khóa" }),
+    });
+    queryMock.mockResolvedValueOnce([{ id: "u-disabled", email: "khoa@gmail.com", name: "Khóa", role: "DONOR", status: "DISABLED" }] as never);
+    expect((await request(app).post("/auth/google").send({ credential: "x".repeat(30), terms_accepted: true })).status).toBe(403);
   });
 
   it("rate-limits repeated login attempts from one IP with 429", async () => {
@@ -73,11 +129,12 @@ describe("identity HTTP API", () => {
     const bcrypt = await import("bcryptjs");
     const password_hash = await bcrypt.hash("Old@123456", 4);
     queryMock
-      .mockResolvedValueOnce([{ id: "00000000-0000-0000-0000-000000000001", email: "donor@test.vn", name: "Old", role: "DONOR" }] as never)
-      .mockResolvedValueOnce([{ id: "00000000-0000-0000-0000-000000000001", email: "donor@test.vn", name: "New name", role: "DONOR" }] as never);
-    const profile = await request(app).patch("/profile").set("Authorization", `Bearer ${donorToken}`).send({ name: "New name" });
+      .mockResolvedValueOnce([{ id: "00000000-0000-0000-0000-000000000001", email: "donor@test.vn", name: "Old", role: "DONOR", phone: null, province: null, address: null, date_of_birth: null, organization_name: null }] as never)
+      .mockResolvedValueOnce([{ id: "00000000-0000-0000-0000-000000000001", email: "donor@test.vn", name: "New name", role: "DONOR", phone: "0901234567", province: "Đà Nẵng", address: "12 Hải Châu", date_of_birth: "2001-01-20", organization_name: null }] as never);
+    const profile = await request(app).patch("/profile").set("Authorization", `Bearer ${donorToken}`).send({ name: "New name", phone: "0901234567", province: "Đà Nẵng", address: "12 Hải Châu", date_of_birth: "2001-01-20" });
     expect(profile.status).toBe(200);
     expect(profile.body.name).toBe("New name");
+    expect(profile.body.province).toBe("Đà Nẵng");
 
     queryMock.mockResolvedValueOnce([{ password_hash }] as never).mockResolvedValueOnce([] as never).mockResolvedValueOnce([] as never);
     const changed = await request(app).post("/auth/change-password").set("Authorization", `Bearer ${donorToken}`).send({ current_password: "Old@123456", new_password: "New@123456" });

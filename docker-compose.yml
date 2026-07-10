@@ -2,7 +2,11 @@ name: charityconnect
 
 services:
   web:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_USE_MOCK_API: ${VITE_USE_MOCK_API:-false}
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
     depends_on:
       - gateway
     ports:
@@ -37,6 +41,8 @@ services:
       GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
       GMAIL_REFRESH_TOKEN: ${GMAIL_REFRESH_TOKEN:-}
       GMAIL_SENDER_EMAIL: ${GMAIL_SENDER_EMAIL:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       UPLOAD_DIR: /app/uploads
     volumes:
       - identity-uploads:/app/uploads

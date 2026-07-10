@@ -175,9 +175,10 @@ describe("mock API demo flows", () => {
   });
 
   it("registers with consent and rejects duplicate or missing consent", async () => {
-    const payload = { name: "Lê An", email: "lean@example.vn", password: "Strong@123", role: "DONOR", terms_accepted: true };
+    const payload = { name: "Lê An", email: "lean@example.vn", password: "Strong@123", phone: "0901234567", province: "Đà Nẵng", address: "12 Hải Châu", date_of_birth: "2001-01-20", role: "DONOR", terms_accepted: true };
     const result = await mockApi<AuthPayload>("/auth/register", { method: "POST", body: JSON.stringify(payload) });
     expect(result.email_notification).toBe("QUEUED");
+    expect(result.user).toMatchObject({ phone: "0901234567", province: "Đà Nẵng" });
     await expect(mockApi("/auth/register", { method: "POST", body: JSON.stringify(payload) })).rejects.toThrow();
     await expect(mockApi("/auth/register", { method: "POST", body: JSON.stringify({ ...payload, email: "other@example.vn", terms_accepted: false }) })).rejects.toThrow();
   });

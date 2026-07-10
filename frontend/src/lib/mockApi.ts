@@ -1217,7 +1217,14 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (pathname === "/auth/register" && method === "POST") {
     if (body.terms_accepted !== true) throw Object.assign(new Error("Bạn cần đồng ý điều khoản sử dụng."), { status: 400 });
     if (state.users.some((item) => item.email === body.email)) throw Object.assign(new Error("Email đã được sử dụng."), { status: 409 });
-    const user: MockUser = { id: createId("user"), name: String(body.name), email: String(body.email), password: String(body.password), role: body.role as Role, status: "ACTIVE" };
+    const user: MockUser = {
+      id: createId("user"), name: String(body.name), email: String(body.email), password: String(body.password), role: body.role as Role, status: "ACTIVE",
+      phone: body.phone ? String(body.phone) : null,
+      province: body.province ? String(body.province) : null,
+      address: body.address ? String(body.address) : null,
+      date_of_birth: body.date_of_birth ? String(body.date_of_birth) : null,
+      organization_name: body.organization_name ? String(body.organization_name) : null,
+    };
     state.users.push(user); state.emailNotifications.push({ event_id: user.id, template: "WELCOME", recipient_user_id: user.id, status: "SIMULATED" }); saveState(state);
     createSession(state, user); saveState(state);
     return { token: `demo-token-${user.id}`, user: safeUser(user), email_notification: "QUEUED" } as T;
@@ -1228,8 +1235,11 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const user = state.users.find((item) => item.id === current.id);
     if (!user) throw Object.assign(new Error("Không tìm thấy tài khoản."), { status: 404 });
     user.name = String(body.name ?? user.name).trim();
+    for (const field of ["phone", "province", "address", "date_of_birth", "organization_name"] as const) {
+      if (body[field] !== undefined && body[field] !== null) user[field] = String(body[field]).trim() || null;
+    }
     localStorage.setItem("cc_user", JSON.stringify(safeUser(user)));
-    pushAuditForUser(state, user.id, "PROFILE_UPDATED", "USER", user.id, "IDENTITY", { name: user.name });
+    pushAuditForUser(state, user.id, "PROFILE_UPDATED", "USER", user.id, "IDENTITY", { fields: Object.keys(body).filter((key) => key !== "email") });
     saveState(state);
     return safeUser(user) as T;
   }

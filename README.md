@@ -29,10 +29,46 @@ Khách chưa đăng nhập xem được kiểm chứng nguồn, chiến dịch, 
 Khi cần kết nối dịch vụ thật, sao chép `.env.example` thành `.env` và điền biến môi trường tương ứng.
 
 - AI Assistant: `ANTHROPIC_API_KEY` hoặc `OPENAI_API_KEY`. Bot ưu tiên dữ liệu nội bộ CharityConnect; câu hỏi ngoài phạm vi mới dùng tìm kiếm web có URL nguồn nếu provider được cấu hình.
+- Google Sign-In: tạo **OAuth client → Web application** trong [Google Cloud Console](https://console.cloud.google.com/apis/credentials), khai báo đúng `Authorized JavaScript origins` cho URL frontend (ví dụ `http://127.0.0.1:5173` và domain Vercel), sau đó điền cùng một Client ID vào `VITE_GOOGLE_CLIENT_ID` (frontend) và `GOOGLE_CLIENT_ID` (Identity Service). Đăng nhập Google chỉ bật khi frontend dùng backend thật: `VITE_USE_MOCK_API=false`.
 - Gmail: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_SENDER_EMAIL`, sau đó chạy `cd backend/identity && npm run gmail:authorize`. Refresh token được ghi vào `.env` và không được commit.
 - Sepolia: `ANCHOR_RPC_URL`, `ANCHOR_PRIVATE_KEY`, `ANCHOR_CHAIN_ID=11155111`, `ANCHOR_EXPLORER_URL`. Nếu không cấu hình, anchor chạy ở chế độ nội bộ `LOCAL_SIMULATION`.
 
 Không ghi API key, OAuth token, private key, database URL hoặc file `.env` vào source code.
+
+## Cấu hình đăng nhập nhanh bằng Google
+
+1. Vào **Google Cloud Console → APIs & Services → Credentials**, tạo OAuth Client ID loại **Web application**.
+2. Thêm từng domain frontend vào **Authorized JavaScript origins**: `http://127.0.0.1:5173` cho local, rồi thêm chính xác URL Vercel/Render khi deploy. Không thêm đường dẫn như `/dang-nhap` vào origin.
+3. Với local Docker, sao chép `.env.example` thành `.env` rồi điền cùng một Client ID cho frontend và Identity Service:
+
+```env
+VITE_USE_MOCK_API=false
+VITE_API_BASE_URL=/api/v1
+VITE_GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com
+GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+```
+
+4. Với Vercel, đặt `VITE_USE_MOCK_API=false`, `VITE_API_BASE_URL=https://<gateway-domain>/api/v1` và `VITE_GOOGLE_CLIENT_ID` trong Environment Variables rồi redeploy. Với Identity Service trên Render/Railway, đặt `GOOGLE_CLIENT_ID` cùng giá trị và `CORS_ORIGINS=https://<vercel-domain>`.
+5. Với database Identity đã tồn tại, chạy migration `backend/identity/sql/007_google_sign_in.sql` và `008_user_profile_details.sql` trước khi deploy service mới.
+
+`VITE_GOOGLE_CLIENT_ID` là định danh công khai của ứng dụng Web, không phải client secret. Không đặt Google client secret, access token hoặc API key vào frontend. Bản frontend chạy dữ liệu local sẽ ẩn nút Google vì không có backend để xác minh ID token.
+
+### Render/Railway cho Identity Service
+
+Google Sign-In cần một backend Identity thật; chỉ deploy frontend trên Render/Vercel sẽ không thể xác minh token. Khi tạo service Identity, chọn Root Directory `backend/identity` và Dockerfile trong thư mục đó. Cấu hình tối thiểu:
+
+```env
+PORT=3001
+DATABASE_URL=postgresql://...
+JWT_SECRET=<một chuỗi ngẫu nhiên dài>
+INTERNAL_SERVICE_TOKEN=<một chuỗi ngẫu nhiên dài>
+GOOGLE_CLIENT_ID=xxxxx.apps.googleusercontent.com
+CORS_ORIGINS=https://<frontend-domain>
+PUBLIC_WEB_URL=https://<frontend-domain>
+```
+
+Gateway cần chuyển `/api/v1/auth/google` về Identity Service. Frontend production phải dùng `VITE_USE_MOCK_API=false` và `VITE_API_BASE_URL=https://<gateway-domain>/api/v1`. Sau khi đổi biến `VITE_*`, redeploy frontend vì Vite nhúng các biến này vào bundle lúc build.
 
 ## Chạy toàn bộ hệ thống
 

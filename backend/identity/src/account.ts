@@ -13,7 +13,14 @@ import type { AuthRequest, Role } from "./types";
 const resetRequestLimiter = rateLimit({ windowMs: 15 * 60_000, max: 5, scope: "pwd-reset-request", message: "Bạn yêu cầu đặt lại mật khẩu quá nhiều lần. Vui lòng thử lại sau." });
 const resetConfirmLimiter = rateLimit({ windowMs: 15 * 60_000, max: 10, scope: "pwd-reset-confirm", message: "Quá nhiều lần thử. Vui lòng thử lại sau." });
 
-const profileSchema = z.object({ name: z.string().trim().min(2).max(120) });
+const profileSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  phone: z.string().trim().regex(/^\+?[0-9][0-9\s-]{7,18}$/, "Số điện thoại không hợp lệ").optional().nullable(),
+  province: z.string().trim().min(2).max(120).optional().nullable(),
+  address: z.string().trim().min(4).max(300).optional().nullable(),
+  date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Ngày sinh phải có dạng YYYY-MM-DD").optional().nullable(),
+  organization_name: z.string().trim().min(2).max(200).optional().nullable(),
+});
 const changePasswordSchema = z.object({
   current_password: z.string().min(1),
   new_password: z.string().min(8).max(128),
@@ -34,16 +41,19 @@ export const accountRouter = Router();
 accountRouter.patch("/profile", authenticate, async (req: AuthRequest, res, next) => {
   try {
     const input = profileSchema.parse(req.body);
-    const before = (await query<{ id: string; email: string; name: string; role: Role }>(
-      "SELECT id,email,name,role FROM users WHERE id=$1",
+    const before = (await query<{ id: string; email: string; name: string; role: Role; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
+      "SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name FROM users WHERE id=$1",
       [req.user!.sub],
     ))[0];
     if (!before) { res.status(404).json({ message: "Không tìm thấy tài khoản" }); return; }
-    const rows = await query<{ id: string; email: string; name: string; role: Role }>(
-      "UPDATE users SET name=$1,updated_at=now() WHERE id=$2 RETURNING id,email,name,role",
-      [input.name, req.user!.sub],
+    const rows = await query<{ id: string; email: string; name: string; role: Role; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
+      `UPDATE users SET name=$1,phone=COALESCE($2,phone),province=COALESCE($3,province),address=COALESCE($4,address),
+       date_of_birth=COALESCE($5,date_of_birth),organization_name=COALESCE($6,organization_name),updated_at=now()
+       WHERE id=$7 RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name`,
+      [input.name, input.phone ?? null, input.province ?? null, input.address ?? null, input.date_of_birth ?? null, input.organization_name ?? null, req.user!.sub],
     );
-    await audit(req.user!.sub, "PROFILE_UPDATED", "USER", req.user!.sub, { name: before.name }, { name: rows[0].name });
+    const updatedFields = Object.keys(input).filter((key) => key !== "name" && input[key as keyof typeof input] !== undefined);
+    await audit(req.user!.sub, "PROFILE_UPDATED", "USER", req.user!.sub, { fields: ["name"] }, { fields: ["name", ...updatedFields] });
     res.json(rows[0]);
   } catch (error) { next(error); }
 });
@@ -51,9 +61,13 @@ accountRouter.patch("/profile", authenticate, async (req: AuthRequest, res, next
 accountRouter.post("/auth/change-password", authenticate, async (req: AuthRequest, res, next) => {
   try {
     const input = changePasswordSchema.parse(req.body);
-    const rows = await query<{ password_hash: string }>("SELECT password_hash FROM users WHERE id=$1", [req.user!.sub]);
+    const rows = await query<{ password_hash: string | null }>("SELECT password_hash FROM users WHERE id=$1", [req.user!.sub]);
     const user = rows[0];
-    if (!user || !(await bcrypt.compare(input.current_password, user.password_hash))) {
+    if (!user?.password_hash) {
+      res.status(409).json({ message: "Tài khoản Google chưa có mật khẩu. Hãy dùng chức năng Quên mật khẩu để tạo mật khẩu đầu tiên." });
+      return;
+    }
+    if (!(await bcrypt.compare(input.current_password, user.password_hash))) {
       res.status(401).json({ message: "Mật khẩu hiện tại không đúng" });
       return;
     }

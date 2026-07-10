@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, MonitorSmartphone, Save, ShieldCheck, UserRoundCog } from "lucide-react";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../auth/AuthContext";
 import { api } from "../../lib/api";
 import type { AccountSession, AuditLogEntry, User } from "../../types";
 
 type Tab = "profile" | "security" | "sessions" | "audit";
+type ProfileInput = Pick<User, "name" | "phone" | "province" | "address" | "date_of_birth" | "organization_name">;
 
 const tabs: Array<{ id: Tab; label: string; icon: typeof UserRoundCog }> = [
   { id: "profile", label: "Hồ sơ", icon: UserRoundCog },
@@ -26,7 +27,7 @@ export function AccountPage(): JSX.Element {
   const audit = useQuery({ queryKey: ["me-audit"], queryFn: () => api<AuditLogEntry[]>("/me/audit-logs"), enabled: Boolean(user) && tab === "audit" });
 
   const profileMutation = useMutation({
-    mutationFn: (name: string) => api<User>("/profile", { method: "PATCH", body: JSON.stringify({ name }) }),
+    mutationFn: (payload: ProfileInput) => api<User>("/profile", { method: "PATCH", body: JSON.stringify(payload) }),
     onSuccess(nextUser) {
       updateUser(nextUser);
       setProfileMessage("Đã cập nhật hồ sơ.");
@@ -83,7 +84,7 @@ export function AccountPage(): JSX.Element {
         </aside>
 
         <section className="rounded-3xl border border-ink/10 bg-white p-5 shadow-sm sm:p-6">
-          {tab === "profile" && <ProfileTab user={activeUser} message={profileMessage} loading={profileMutation.isPending} error={profileMutation.error as Error | null} onSubmit={(name) => profileMutation.mutate(name)} />}
+          {tab === "profile" && <ProfileTab user={activeUser} message={profileMessage} loading={profileMutation.isPending} error={profileMutation.error as Error | null} onSubmit={(profile) => profileMutation.mutate(profile)} />}
           {tab === "security" && <SecurityTab message={securityMessage} loading={passwordMutation.isPending} error={passwordMutation.error as Error | null} onSubmit={(payload) => passwordMutation.mutate(payload)} />}
           {tab === "sessions" && <SessionsTab sessions={sessions.data ?? []} loading={sessions.isLoading} error={sessions.error as Error | null} revokeLoading={revokeSession.isPending || revokeAll.isPending} onRevoke={(id) => revokeSession.mutate(id)} onRevokeAll={() => revokeAll.mutate()} />}
           {tab === "audit" && <AuditTab logs={audit.data ?? []} loading={audit.isLoading} error={audit.error as Error | null} />}
@@ -93,20 +94,32 @@ export function AccountPage(): JSX.Element {
   );
 }
 
-function ProfileTab({ user, message, loading, error, onSubmit }: { user: User | null | undefined; message: string; loading: boolean; error: Error | null; onSubmit: (name: string) => void }): JSX.Element {
-  const [name, setName] = useState(user?.name ?? "");
+function ProfileTab({ user, message, loading, error, onSubmit }: { user: User | null | undefined; message: string; loading: boolean; error: Error | null; onSubmit: (profile: ProfileInput) => void }): JSX.Element {
+  const [form, setForm] = useState<ProfileInput>({
+    name: user?.name ?? "", phone: user?.phone ?? "", province: user?.province ?? "", address: user?.address ?? "",
+    date_of_birth: user?.date_of_birth?.slice(0, 10) ?? "", organization_name: user?.organization_name ?? "",
+  });
+  useEffect(() => {
+    setForm({
+      name: user?.name ?? "", phone: user?.phone ?? "", province: user?.province ?? "", address: user?.address ?? "",
+      date_of_birth: user?.date_of_birth?.slice(0, 10) ?? "", organization_name: user?.organization_name ?? "",
+    });
+  }, [user?.id, user?.name, user?.phone, user?.province, user?.address, user?.date_of_birth, user?.organization_name]);
+  const isOrganization = user?.role === "ORGANIZATION";
+  function update<K extends keyof ProfileInput>(key: K, value: ProfileInput[K]): void { setForm((current) => ({ ...current, [key]: value })); }
   function submit(event: FormEvent): void {
     event.preventDefault();
-    onSubmit(name);
+    onSubmit({ ...form, date_of_birth: form.date_of_birth || null, organization_name: isOrganization ? form.organization_name : null });
   }
   return (
     <form onSubmit={submit} className="max-w-2xl">
-      <h2 className="text-2xl font-black">Hồ sơ</h2>
-      <p className="mt-2 text-sm text-slate-500">Bạn có thể sửa tên hiển thị. Email đăng nhập đang khóa chỉnh sửa để giữ hệ thống tối giản và an toàn.</p>
-      <label className="mt-6 block text-sm font-black">Tên hiển thị</label>
-      <input className="input mt-2" value={name} onChange={(event) => setName(event.target.value)} minLength={2} />
-      <label className="mt-4 block text-sm font-black">Email đăng nhập</label>
-      <input className="input mt-2 bg-sage-100 text-slate-500" value={user?.email ?? ""} readOnly />
+      <h2 className="text-2xl font-black">Hồ sơ liên hệ</h2>
+      <p className="mt-2 text-sm text-slate-500">Bạn tự quản lý thông tin liên hệ. Email đăng nhập chỉ đọc; số điện thoại và địa chỉ không công khai trong chiến dịch, biên nhận hay TrustChain.</p>
+      <div className="mt-6 grid gap-4 sm:grid-cols-2"><label><span className="label">{isOrganization ? "Người đại diện" : "Họ và tên"}</span><input className="input" value={form.name ?? ""} onChange={(event) => update("name", event.target.value)} minLength={2} required /></label><label><span className="label">Số điện thoại</span><input className="input" type="tel" value={form.phone ?? ""} onChange={(event) => update("phone", event.target.value)} placeholder="0901234567" /></label></div>
+      {isOrganization && <label className="mt-4 block"><span className="label">Tên tổ chức</span><input className="input" value={form.organization_name ?? ""} onChange={(event) => update("organization_name", event.target.value)} placeholder="Quỹ / câu lạc bộ / tổ chức thiện nguyện" /></label>}
+      <label className="mt-4 block"><span className="label">Email đăng nhập</span><input className="input mt-2 bg-sage-100 text-slate-500" value={user?.email ?? ""} readOnly /></label>
+      <div className="mt-4 grid gap-4 sm:grid-cols-2"><label><span className="label">Tỉnh / thành phố</span><input className="input" value={form.province ?? ""} onChange={(event) => update("province", event.target.value)} placeholder="Đà Nẵng" /></label>{!isOrganization && <label><span className="label">Ngày sinh</span><input className="input" type="date" value={form.date_of_birth ?? ""} onChange={(event) => update("date_of_birth", event.target.value)} /></label>}</div>
+      <label className="mt-4 block"><span className="label">Địa chỉ liên hệ</span><input className="input" value={form.address ?? ""} onChange={(event) => update("address", event.target.value)} placeholder="Số nhà, đường, phường/xã" /></label>
       {message && <p className="mt-4 rounded-2xl bg-brand-50 px-4 py-3 text-sm font-bold text-brand-800">{message}</p>}
       {error && <p className="mt-4 rounded-2xl bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error.message}</p>}
       <button className="btn-primary mt-6" disabled={loading}><Save size={18} /> Lưu hồ sơ</button>
@@ -194,4 +207,3 @@ function formatDate(value?: string | null): string {
   if (!value) return "—";
   return new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 }
-

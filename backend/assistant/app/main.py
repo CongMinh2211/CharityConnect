@@ -26,6 +26,11 @@ def cors_origins_from_env() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+def service_url(name: str, default: str) -> str:
+    value = os.getenv(name, default).rstrip("/")
+    return value if value.startswith(("http://", "https://")) else f"http://{value}"
+
+
 app = FastAPI(title="CharityConnect Assistant API", version="3.1.0", description="Internal-first Vietnamese assistant with cited web fallback.")
 app.add_middleware(
     CORSMiddleware,
@@ -294,8 +299,8 @@ def smart_offline_answer(message: str, context_str: str) -> str:
 
 
 async def load_internal_context(path: str) -> str:
-    campaign_url = os.getenv("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
-    donation_url = os.getenv("DONATION_SERVICE_URL", "http://donation-service:8000")
+    campaign_url = service_url("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
+    donation_url = service_url("DONATION_SERVICE_URL", "http://donation-service:8000")
     facts: dict[str, object] = {
         "content_kpis": content_verify.kpis(),
         "content_statistics": content_verify.statistics(),
@@ -568,8 +573,8 @@ def web_answer(payload: ChatRequest) -> tuple[str, list[AssistantSource]]:
 
 
 async def load_internal_context(path: str) -> str:
-    campaign_url = os.getenv("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
-    donation_url = os.getenv("DONATION_SERVICE_URL", "http://donation-service:8000")
+    campaign_url = service_url("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
+    donation_url = service_url("DONATION_SERVICE_URL", "http://donation-service:8000")
     facts: dict[str, object] = {}
     async with httpx.AsyncClient(timeout=2) as client:
         calls = [
@@ -589,8 +594,8 @@ RECEIPT_PATTERN = re.compile(r"\bCC-\d{8}-[A-Z0-9]{10}\b", re.IGNORECASE)
 
 
 async def load_internal_context(path: str) -> str:
-    campaign_url = os.getenv("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
-    donation_url = os.getenv("DONATION_SERVICE_URL", "http://donation-service:8000")
+    campaign_url = service_url("CAMPAIGN_SERVICE_URL", "http://campaign-service:3002")
+    donation_url = service_url("DONATION_SERVICE_URL", "http://donation-service:8000")
     facts: dict[str, object] = {
         "content_kpis": content_verify.kpis(),
         "content_articles": [
@@ -631,7 +636,7 @@ async def verify_receipt_in_chat(message: str) -> ChatResponse | None:
     if not match:
         return None
     receipt_number = match.group(0).upper()
-    donation_url = os.getenv("DONATION_SERVICE_URL", "http://donation-service:8000")
+    donation_url = service_url("DONATION_SERVICE_URL", "http://donation-service:8000")
     try:
         async with httpx.AsyncClient(timeout=3) as client:
             response = await client.get(f"{donation_url}/transparency/receipts/{receipt_number}")

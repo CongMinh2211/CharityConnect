@@ -17,7 +17,7 @@ export function CampaignListPage(): JSX.Element {
   const { user } = useAuth(); const [filters, setFilters] = useState(initialFilters); const [filtersOpen, setFiltersOpen] = useState(false);
   const params = new URLSearchParams(); if (filters.search) params.set("search", filters.search); if (filters.category) params.set("category", filters.category); if (filters.ending) params.set("ending_within", filters.ending); params.set("sort", filters.sort);
   if (filters.progress) { const [min, max] = filters.progress.split("-"); params.set("progress_min", min); if (max) params.set("progress_max", max); }
-  const campaigns = useQuery({ queryKey: ["campaigns", params.toString()], queryFn: () => api<Campaign[]>(`/campaigns?${params}`) });
+  const campaigns = useQuery({ queryKey: ["campaigns", params.toString()], queryFn: () => api<Campaign[]>(`/campaigns?${params}`), refetchInterval: 5_000, refetchOnWindowFocus: true });
   const allCampaigns = useQuery({ queryKey: ["campaigns", "categories"], queryFn: () => api<Campaign[]>("/campaigns") });
   const categories = useMemo(() => Array.from(new Set(allCampaigns.data?.map((item) => item.category) ?? [])), [allCampaigns.data]);
   const totalRaised = allCampaigns.data?.reduce((sum, item) => sum + item.raised_amount, 0) ?? 0;

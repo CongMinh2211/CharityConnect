@@ -33,6 +33,7 @@ beforeEach(() => {
   auditMock.mockReset();
   mockConnection.query.mockReset();
   mockRedisClient.isReady = false;
+  fetchMock.mockReset();
   mockPool.connect.mockResolvedValue(mockConnection);
   mockConnection.query.mockResolvedValue({ rows: [] });
 });
@@ -63,6 +64,17 @@ describe("campaign HTTP API", () => {
     expect((await request(app).get("/analytics/campaigns/public?period=wrong")).status).toBe(400);
     queryMock.mockResolvedValueOnce([] as never).mockResolvedValueOnce([] as never).mockResolvedValueOnce([] as never);
     expect((await request(app).get("/analytics/campaigns/public")).body.totals).toEqual({});
+  });
+
+  it("reports donation event synchronization totals to admins", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ campaigns_total: "2", processed_donation_events: "3", processed_amount: "500000", raised_amount: "500000", pending_outbox: "0", linked_organizations: "1" }] as never)
+      .mockResolvedValueOnce([{ campaign_id: "c1", amount: "500000", event_count: "3" }] as never);
+    const response = await request(app).get("/admin/sync/campaign").set("Authorization", `Bearer ${adminToken}`);
+    expect(response.status).toBe(200);
+    expect(response.body.totals.processed_amount).toBe(500000);
+    expect(response.body.totals.linked_organizations).toBe(1);
+    expect(response.body.campaigns[0]).toEqual({ campaign_id: "c1", amount: 500000, event_count: 3 });
   });
 
   it("lists and reads public approved campaigns", async () => {
@@ -154,6 +166,14 @@ describe("campaign HTTP API", () => {
     expect((await request(app).post("/organization/campaigns").set("Authorization", `Bearer ${orgToken}`).field("title", validCampaign.title).field("summary", validCampaign.summary).field("description", validCampaign.description).field("category", validCampaign.category).field("goalAmount", String(validCampaign.goalAmount)).field("endDate", validCampaign.endDate)).status).toBe(403);
   });
 
+  it("fails closed when Identity Service is unavailable during organization checks", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("identity offline"));
+    const response = await request(app).post("/organization/campaigns").set("Authorization", `Bearer ${orgToken}`).field("title", validCampaign.title).field("summary", validCampaign.summary).field("description", validCampaign.description).field("category", validCampaign.category).field("goalAmount", String(validCampaign.goalAmount)).field("endDate", validCampaign.endDate);
+    expect(response.status).toBe(503);
+    expect(response.body.message).toContain("Identity Service");
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
   it("updates editable drafts and blocks approved edits", async () => {
     queryMock.mockResolvedValueOnce([{ id: "c1", status: "DRAFT" }] as never).mockResolvedValueOnce([{ id: "c1", status: "DRAFT", title: validCampaign.title }] as never);
     expect((await request(app).put("/organization/campaigns/c1").set("Authorization", `Bearer ${orgToken}`).field("title", validCampaign.title).field("summary", validCampaign.summary).field("description", validCampaign.description).field("category", validCampaign.category).field("goalAmount", String(validCampaign.goalAmount)).field("endDate", validCampaign.endDate)).status).toBe(200);
@@ -177,13 +197,28 @@ describe("campaign HTTP API", () => {
   it("lists and reviews campaigns as admin", async () => {
     queryMock.mockResolvedValueOnce([{ id: "c1", status: "PENDING_REVIEW" }] as never);
     expect((await request(app).get("/admin/campaigns?status=PENDING_REVIEW").set("Authorization", `Bearer ${adminToken}`)).status).toBe(200);
-    queryMock.mockResolvedValueOnce([{ status: "PENDING_REVIEW" }] as never).mockResolvedValueOnce([{ id: "c1", status: "APPROVED" }] as never);
+    queryMock.mockResolvedValueOnce([{ status: "PENDING_REVIEW", organization_id: "org-1" }] as never).mockResolvedValueOnce([{ id: "c1", status: "APPROVED" }] as never);
+    fetchMock.mockResolvedValueOnce({ status: 200, json: async () => ({ status: "VERIFIED" }) });
     mockRedisClient.isReady = true;
     mockRedisClient.scanIterator.mockImplementationOnce(() => (async function* () { yield "campaigns:public:all:"; })());
     expect((await request(app).patch("/admin/campaigns/c1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "APPROVED" })).status).toBe(200);
     expect(auditMock).toHaveBeenCalled();
     expect(mockRedisClient.del).toHaveBeenCalled();
     expect((await request(app).patch("/admin/campaigns/c1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "REJECTED" })).status).toBe(400);
+  });
+
+  it("blocks campaign approval when the linked organization is no longer verified", async () => {
+    queryMock.mockResolvedValueOnce([{ status: "PENDING_REVIEW", organization_id: "org-1" }] as never);
+    fetchMock.mockResolvedValueOnce({ status: 200, json: async () => ({ status: "EXPIRED" }) });
+
+    const response = await request(app)
+      .patch("/admin/campaigns/c1/status")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ status: "APPROVED" });
+
+    expect(response.status).toBe(409);
+    expect(response.body.message).toContain("tổ chức");
+    expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
   it("exposes eligibility and ownership internally", async () => {

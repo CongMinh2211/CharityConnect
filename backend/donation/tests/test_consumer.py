@@ -134,3 +134,34 @@ async def test_lifespan_initializes_state_and_closes(monkeypatch):
     async with main.lifespan(main.app):
         assert main.app.state.db is not None
         assert main.app.state.redis is not None
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_requeues_an_event_missing_from_campaign(monkeypatch):
+    from datetime import datetime, timezone
+    from uuid import UUID
+    from tests.test_api import FakeHTTP, FakeResponse
+
+    db = FakeDB()
+    db.fetch_results.append([{
+        "id": UUID("11111111-1111-1111-1111-111111111111"),
+        "donor_id": UUID("22222222-2222-2222-2222-222222222222"),
+        "campaign_id": UUID("33333333-3333-3333-3333-333333333333"),
+        "campaign_title": "Lớp học vùng cao", "amount": 50000,
+        "created_at": datetime.now(timezone.utc), "receipt_number": "CC-001",
+    }])
+    http = FakeHTTP(); http.responses.append(FakeResponse(payload={"credited": False}))
+    app = type("App", (), {"state": type("S", (), {"db": db, "http": http})()})()
+    sleep_calls = 0
+
+    async def stop_after_cycle(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls > 1:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(main.asyncio, "sleep", stop_after_cycle)
+    with pytest.raises(asyncio.CancelledError):
+        await main.reconcile_campaign_events(app)
+    assert db.executed
+    assert "ON CONFLICT(id) DO UPDATE" in db.executed[0][0]

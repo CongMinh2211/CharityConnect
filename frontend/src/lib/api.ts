@@ -116,7 +116,7 @@ export async function analyzeSource(request: SourceAnalysisRequest): Promise<Sou
 }
 
 export async function getAssistantRoleGuide(role: Role | "PUBLIC", path = "/"): Promise<RoleGuideResponse> {
-  const assistantBase = import.meta.env.VITE_ASSISTANT_URL ?? "http://127.0.0.1:8001";
+  const assistantBase = isMockMode ? (import.meta.env.VITE_ASSISTANT_URL ?? "http://127.0.0.1:8001") : API_BASE;
   try {
     const response = await fetch(`${assistantBase}/assistant/role-guide?role=${role}&path=${encodeURIComponent(path)}`);
     if (!response.ok) throw new Error("Role guide unavailable");

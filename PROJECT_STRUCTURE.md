@@ -76,3 +76,35 @@ charityconnect/
 
 - Do not commit `.env`, `node_modules`, `dist`, coverage, logs, local uploads, local helper scripts or generated runtime folders.
 - CapStone deliverables are generated under `../outputs/CharityConnect_CapStone_Final/` so the code repo stays clean unless final documents are intentionally added later.
+
+## Production synchronization modules
+
+```text
+render.yaml                         Render Blueprint: gateway, private services, 3 PostgreSQL, Redis, persistent upload disks
+nginx/
+  Dockerfile                        Gateway image with envsubst
+  default.conf.template             Render private-host routing, CORS and OPTIONS
+backend/identity/src/
+  bootstrap.ts                      Bootstrap the single initial Admin from environment
+  auth.ts                           JWT plus database-backed session validation
+  account.ts                        Google/password flags, admin users and identity sync status
+backend/campaign/src/
+  auth.ts                           Fail-closed Identity session introspection
+  app.ts                            Donation idempotency and campaign sync status
+backend/donation/app/
+  auth.py                           Fail-closed Identity session introspection
+  main.py                           Transactional outbox, reconciliation and donation sync status
+frontend/src/pages/AdminPage.tsx    Combined Identity/Campaign/Donation synchronization view
+```
+
+Identity, Campaign and Donation never query each other's database. Cross-service consistency is implemented with UUID references, private APIs, Redis Stream consumer groups, unique `event_id` constraints and reconciliation.
+
+### Database relationship rules
+
+- Identity: `organization_profiles.user_id`, sessions, notifications and email outbox reference `users.id` with PostgreSQL foreign keys.
+- Campaign: budget items, milestones, impact reports, allocations, escrow and processed donation events reference `campaigns.id` with PostgreSQL foreign keys.
+- Donation: receipts reference donations; anchor entries reference ledger anchors and ledger positions.
+- A physical foreign key cannot span three independent PostgreSQL databases. Cross-service references such as `campaigns.organization_id` and `donations.donor_id` are validated against Identity through private APIs, carried as UUIDs, and reconciled with idempotent events.
+- Render Blueprint uses three paid `basic-256mb` PostgreSQL instances because a workspace can only create one Free PostgreSQL; this preserves the database-per-service boundary.
+- Identity and Campaign mount `/app/uploads` on persistent disks so verification documents and evidence do not disappear after a deploy.
+- Organization submissions and review audit records are written atomically. Admin and organization screens refresh critical queues/status every five seconds.

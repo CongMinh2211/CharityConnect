@@ -32,6 +32,16 @@ describe("identity authorization", () => {
     }
   });
 
+  it("requires a server-side session identifier in production", () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    const token = signToken({ sub: "u1", email: "a@b.vn", name: "A", role: "DONOR" });
+    const status = jest.fn().mockReturnThis(); const json = jest.fn();
+    authenticate({ headers: { authorization: `Bearer ${token}` } } as never, { status, json } as never, jest.fn());
+    expect(status).toHaveBeenCalledWith(401);
+    if (previous === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previous;
+  });
+
   it("allows matching roles and protects internal routes", () => {
     const next = jest.fn();
     authorize("ADMIN")({ user: { sub: "u1", email: "a", name: "A", role: "ADMIN" } } as never, {} as never, next);

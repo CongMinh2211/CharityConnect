@@ -32,8 +32,19 @@ export function OrganizationPage(): JSX.Element {
   const [params, setParams] = useSearchParams();
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
   const active = (params.get("tab") as Tab) || "overview";
-  const profile = useQuery({ queryKey: ["organization-profile"], queryFn: () => api<OrganizationProfile | null>("/organizations/me") });
-  const campaigns = useQuery({ queryKey: ["organization-campaigns"], queryFn: () => api<Campaign[]>("/organization/campaigns"), enabled: profile.data?.status === "VERIFIED" });
+  const profile = useQuery({
+    queryKey: ["organization-profile"],
+    queryFn: () => api<OrganizationProfile | null>("/organizations/me"),
+    refetchInterval: 5_000,
+    refetchOnWindowFocus: true,
+  });
+  const campaigns = useQuery({
+    queryKey: ["organization-campaigns"],
+    queryFn: () => api<Campaign[]>("/organization/campaigns"),
+    enabled: profile.data?.status === "VERIFIED",
+    refetchInterval: profile.data?.status === "VERIFIED" ? 5_000 : false,
+    refetchOnWindowFocus: true,
+  });
   const action = useMutation({
     mutationFn: ({ id, type }: { id: string; type: "submit" | "close" }) => api(`/organization/campaigns/${id}/${type}`, { method: "POST" }),
     onSuccess: () => void client.invalidateQueries({ queryKey: ["organization-campaigns"] })
@@ -53,10 +64,11 @@ export function OrganizationPage(): JSX.Element {
           {profile.data && (
             <div className="card mb-5 p-5">
               <div className="flex justify-between gap-3"><strong>{profile.data.legal_name}</strong><StatusBadge status={profile.data.status} /></div>
+              {profile.data.status === "PENDING" && <p className="mt-3 text-sm text-slate-600">Hồ sơ đang nằm trong hàng đợi Admin. Trang này tự kiểm tra trạng thái mới mỗi 5 giây.</p>}
               {profile.data.rejection_reason && <p className="mt-3 text-sm text-rose-700">{profile.data.rejection_reason}</p>}
             </div>
           )}
-          <OrganizationApplicationForm />
+          {(!profile.data || profile.data.status === "REJECTED") && <OrganizationApplicationForm />}
         </div>
       </div>
     );

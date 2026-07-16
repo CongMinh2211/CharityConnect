@@ -6,6 +6,8 @@ services:
       context: ./frontend
       args:
         VITE_USE_MOCK_API: ${VITE_USE_MOCK_API:-false}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://127.0.0.1:8080/api/v1}
+        VITE_ASSISTANT_URL: ${VITE_ASSISTANT_URL:-http://127.0.0.1:8080/api/v1}
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
     depends_on:
       - gateway
@@ -42,6 +44,9 @@ services:
       GMAIL_REFRESH_TOKEN: ${GMAIL_REFRESH_TOKEN:-}
       GMAIL_SENDER_EMAIL: ${GMAIL_SENDER_EMAIL:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@demo.vn}
+      ADMIN_INITIAL_PASSWORD: ${ADMIN_INITIAL_PASSWORD:-Demo@12345}
+      CAMPAIGN_SERVICE_URL: http://campaign-service:3002
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       UPLOAD_DIR: /app/uploads
     volumes:
@@ -89,6 +94,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:-local-charityconnect-secret}
       INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-local-internal-token}
       CAMPAIGN_SERVICE_URL: http://campaign-service:3002
+      IDENTITY_SERVICE_URL: http://identity-service:3001
+      RECONCILIATION_INTERVAL_SECONDS: ${RECONCILIATION_INTERVAL_SECONDS:-60}
       ANCHOR_RPC_URL: ${ANCHOR_RPC_URL:-}
       ANCHOR_PRIVATE_KEY: ${ANCHOR_PRIVATE_KEY:-}
       ANCHOR_CHAIN_ID: ${ANCHOR_CHAIN_ID:-11155111}

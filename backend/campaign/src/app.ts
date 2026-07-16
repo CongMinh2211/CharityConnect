@@ -34,6 +34,25 @@ const evidenceUpload = multer({
   }
 });
 const categories = ["EMERGENCY", "EDUCATION", "HEALTH", "ENVIRONMENT", "COMMUNITY"] as const;
+const internalUrl = (value: string | undefined, fallback: string): string => {
+  const raw = value || fallback;
+  return /^https?:\/\//i.test(raw) ? raw.replace(/\/$/, "") : `http://${raw.replace(/\/$/, "")}`;
+};
+type OrganizationIdentity = { status: string | null; legal_name?: string; verification_expires_at?: string | null };
+
+async function loadOrganizationIdentity(userId: string): Promise<OrganizationIdentity> {
+  const response = await fetch(
+    `${internalUrl(process.env.IDENTITY_SERVICE_URL, "localhost:3001")}/internal/organizations/${encodeURIComponent(userId)}/status`,
+    {
+      headers: { "x-internal-token": process.env.INTERNAL_SERVICE_TOKEN ?? "local-internal-token" },
+      signal: AbortSignal.timeout(5_000),
+    },
+  );
+  if (typeof response.status === "number" && response.status >= 400) {
+    throw new Error(`Identity Service returned ${response.status}`);
+  }
+  return await response.json() as OrganizationIdentity;
+}
 const campaignInput = z.object({
   title: z.string().trim().min(5).max(160),
   summary: z.string().trim().min(10).max(300),
@@ -275,10 +294,13 @@ app.get("/organization/campaigns", authenticate, authorize("ORGANIZATION"), asyn
 app.post("/organization/campaigns", authenticate, authorize("ORGANIZATION"), upload.single("image"), async (req: AuthRequest, res, next) => {
   try {
     const input = campaignInput.parse(req.body);
-    const identityResponse = await fetch(`${process.env.IDENTITY_SERVICE_URL}/internal/organizations/${req.user!.sub}/status`, {
-      headers: { "x-internal-token": process.env.INTERNAL_SERVICE_TOKEN ?? "local-internal-token" }
-    });
-    const organization = await identityResponse.json() as { status: string | null; legal_name?: string };
+    let organization: OrganizationIdentity;
+    try {
+      organization = await loadOrganizationIdentity(req.user!.sub);
+    } catch {
+      res.status(503).json({ message: "Không kết nối được Identity Service để kiểm tra tổ chức" });
+      return;
+    }
     if (organization.status !== "VERIFIED") { res.status(403).json({ message: "Tổ chức phải được xác minh trước khi tạo chiến dịch" }); return; }
     const rows = await query<{ id: string }>(
       `INSERT INTO campaigns(organization_id,organization_name,title,summary,description,category,goal_amount,image_path,end_date)
@@ -340,8 +362,13 @@ app.post("/organization/campaigns/:id/submit", authenticate, authorize("ORGANIZA
     if (!plan || Number(plan.budget_total) !== Number(plan.goal_amount) || Number(plan.milestone_count) < 1) {
       res.status(409).json({ message: "Cần hoàn thiện ngân sách bằng mục tiêu và ít nhất một mốc trước khi nộp duyệt" }); return;
     }
-    const identityResponse = await fetch(`${process.env.IDENTITY_SERVICE_URL}/internal/organizations/${req.user!.sub}/status`, { headers: { "x-internal-token": process.env.INTERNAL_SERVICE_TOKEN ?? "local-internal-token" } });
-    const organization = await identityResponse.json() as { status: string | null };
+    let organization: OrganizationIdentity;
+    try {
+      organization = await loadOrganizationIdentity(req.user!.sub);
+    } catch {
+      res.status(503).json({ message: "Không kết nối được Identity Service để kiểm tra tổ chức" });
+      return;
+    }
     if (organization.status !== "VERIFIED") { res.status(403).json({ message: "Tổ chức chưa được xác minh" }); return; }
     const rows = await query("UPDATE campaigns SET status='PENDING_REVIEW',submitted_at=now(),rejection_reason=NULL,updated_at=now() WHERE id=$1 RETURNING *", [req.params.id]);
     await audit(req.user!.sub, "CAMPAIGN_SUBMITTED", campaignId, before, rows[0]);
@@ -415,9 +442,25 @@ app.patch("/admin/campaigns/:id/status", authenticate, authorize("ADMIN"), async
     const campaignId = String(req.params.id);
     const input = z.object({ status: z.enum(["APPROVED", "REJECTED"]), reason: z.string().trim().max(500).optional() }).parse(req.body);
     if (input.status === "REJECTED" && !input.reason) { res.status(400).json({ message: "Cần nhập lý do từ chối" }); return; }
-    const before = (await query<{ status: CampaignStatus }>("SELECT status FROM campaigns WHERE id=$1 AND deleted_at IS NULL", [req.params.id]))[0];
+    const before = (await query<{ status: CampaignStatus; organization_id: string }>(
+      "SELECT status,organization_id FROM campaigns WHERE id=$1 AND deleted_at IS NULL",
+      [req.params.id],
+    ))[0];
     if (!before) { res.status(404).json({ message: "Không tìm thấy chiến dịch" }); return; }
     if (!canTransition(before.status, input.status)) { res.status(409).json({ message: "Trạng thái chuyển không hợp lệ" }); return; }
+    if (input.status === "APPROVED") {
+      let organization: OrganizationIdentity;
+      try {
+        organization = await loadOrganizationIdentity(before.organization_id);
+      } catch {
+        res.status(503).json({ message: "Không kết nối được Identity Service để xác nhận tổ chức trước khi duyệt chiến dịch" });
+        return;
+      }
+      if (organization.status !== "VERIFIED") {
+        res.status(409).json({ message: "Không thể duyệt chiến dịch vì tổ chức chưa được xác minh hoặc xác minh đã hết hạn" });
+        return;
+      }
+    }
     const rows = await query(
       "UPDATE campaigns SET status=$1,rejection_reason=$2,reviewed_at=now(),reviewed_by=$3,updated_at=now() WHERE id=$4 RETURNING *",
       [input.status, input.reason ?? null, req.user!.sub, req.params.id]
@@ -898,6 +941,32 @@ app.get("/internal/donations/:eventId/reconciliation", internalOnly, async (req,
       campaign_id: processed?.campaign_id ?? null,
       credited_amount: processed ? Number(processed.amount) : null,
       contract_state: escrow?.contract_state ?? null,
+    });
+  } catch (error) { next(error); }
+});
+
+app.get("/admin/sync/campaign", authenticate, authorize("ADMIN"), async (_req, res, next) => {
+  try {
+    const totals = (await query<{
+      campaigns_total: string; processed_donation_events: string; processed_amount: string;
+      raised_amount: string; pending_outbox: string; linked_organizations: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM campaigns WHERE deleted_at IS NULL)::text AS campaigns_total,
+         (SELECT count(*) FROM processed_donation_events)::text AS processed_donation_events,
+         (SELECT COALESCE(sum(amount),0) FROM processed_donation_events)::text AS processed_amount,
+         (SELECT COALESCE(sum(raised_amount),0) FROM campaigns WHERE deleted_at IS NULL)::text AS raised_amount,
+         (SELECT count(*) FROM campaign_outbox_events WHERE published_at IS NULL)::text AS pending_outbox,
+         (SELECT count(DISTINCT organization_id) FROM campaigns WHERE deleted_at IS NULL)::text AS linked_organizations`,
+    ))[0];
+    const campaigns = await query<{ campaign_id: string; amount: string; event_count: string }>(
+      `SELECT campaign_id::text,COALESCE(sum(amount),0)::text AS amount,count(*)::text AS event_count
+       FROM processed_donation_events GROUP BY campaign_id ORDER BY campaign_id`,
+    );
+    res.json({
+      service: "campaign", as_of: new Date().toISOString(), status: "READY",
+      totals: Object.fromEntries(Object.entries(totals ?? {}).map(([key, value]) => [key, Number(value)])),
+      campaigns: campaigns.map((item) => ({ campaign_id: item.campaign_id, amount: Number(item.amount), event_count: Number(item.event_count) })),
     });
   } catch (error) { next(error); }
 });

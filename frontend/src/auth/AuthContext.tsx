@@ -80,7 +80,7 @@ export function AuthProvider({ children }: PropsWithChildren): JSX.Element {
         if (!stopped && (status === 401 || status === 403)) clearLocalAuth(true);
       }
     };
-    const interval = window.setInterval(() => void validateSession(), 12_000);
+    const interval = window.setInterval(() => void validateSession(), 5_000);
     const onVisibility = () => { if (document.visibilityState === "visible") void validateSession(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {

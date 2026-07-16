@@ -8,9 +8,9 @@ import type { Campaign, CampaignEscrow, CampaignReportsPublic, FinancialPlan, Im
 
 export function CampaignDetailPage(): JSX.Element {
   const { id = "" } = useParams(); const { user } = useAuth();
-  const campaign = useQuery({ queryKey: ["campaign", id], queryFn: () => api<Campaign>(`/campaigns/${id}`), enabled: Boolean(id) });
-  const reports = useQuery({ queryKey: ["public-impact-reports", id], queryFn: () => api<ImpactReport[]>(`/campaigns/${id}/impact-reports`), enabled: Boolean(id) });
-  const escrow = useQuery({ queryKey: ["campaign-contract", id], queryFn: () => api<CampaignEscrow>(`/campaigns/${id}/contract`), enabled: Boolean(id), retry: false });
+  const campaign = useQuery({ queryKey: ["campaign", id], queryFn: () => api<Campaign>(`/campaigns/${id}`), enabled: Boolean(id), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const reports = useQuery({ queryKey: ["public-impact-reports", id], queryFn: () => api<ImpactReport[]>(`/campaigns/${id}/impact-reports`), enabled: Boolean(id), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const escrow = useQuery({ queryKey: ["campaign-contract", id], queryFn: () => api<CampaignEscrow>(`/campaigns/${id}/contract`), enabled: Boolean(id), retry: false, refetchInterval: 5_000, refetchOnWindowFocus: true });
   const financialPlan = useQuery({ queryKey: ["financial-plan", id], queryFn: () => api<FinancialPlan>(`/campaigns/${id}/financial-plan`), enabled: Boolean(id), retry: false });
   const publicReports = useQuery({ queryKey: ["campaign-reports-public", id], queryFn: () => api<CampaignReportsPublic>(`/campaigns/${id}/reports/public`), enabled: Boolean(id), retry: false });
   if (campaign.isLoading) return <div className="container-page py-12"><div className="skeleton h-[520px]" /></div>;

@@ -1,10 +1,17 @@
 import os
 
+
+def _service_url(name: str, default: str) -> str:
+    value = os.getenv(name, default).rstrip("/")
+    return value if value.startswith(("http://", "https://")) else f"http://{value}"
+
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://donation:donation@localhost:5432/donation")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 JWT_SECRET = os.getenv("JWT_SECRET", "local-charityconnect-secret")
 INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "local-internal-token")
-CAMPAIGN_SERVICE_URL = os.getenv("CAMPAIGN_SERVICE_URL", "http://localhost:3002")
+CAMPAIGN_SERVICE_URL = _service_url("CAMPAIGN_SERVICE_URL", "http://localhost:3002")
+IDENTITY_SERVICE_URL = _service_url("IDENTITY_SERVICE_URL", "http://localhost:3001")
+NODE_ENV = os.getenv("NODE_ENV", "development")
 # Ngưỡng duyệt 2 bước: donation >= ngưỡng phải qua admin duyệt trước khi cộng tiền.
 APPROVAL_THRESHOLD_VND = int(os.getenv("DONATION_APPROVAL_THRESHOLD_VND", "50000000"))
 ANCHOR_RPC_URL = os.getenv("ANCHOR_RPC_URL", "")

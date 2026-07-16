@@ -179,7 +179,7 @@ Ngưỡng coverage mục tiêu: tối thiểu 80%. KPI vận hành gồm chain i
 - Build Command: `npm run build`
 - Output Directory: `dist`
 - Env cho bản preview không có backend: `VITE_USE_MOCK_API=true`
-- Env khi dùng backend thật: `VITE_USE_MOCK_API=false`, `VITE_API_BASE_URL=https://<gateway-domain>/api/v1`, `VITE_ASSISTANT_URL=https://<assistant-domain>`
+- Env khi dùng backend thật: `VITE_USE_MOCK_API=false`, `VITE_API_BASE_URL=https://<gateway-domain>/api/v1`, `VITE_ASSISTANT_URL=https://<gateway-domain>/api/v1`
 
 ### Backend
 
@@ -208,10 +208,62 @@ Nếu tạo Render Web Service dạng Docker từ root repository, Render sẽ t
 Frontend có sẵn `frontend/.env.production` chỉ chứa biến public để deploy web tĩnh lên ngay:
 
 ```env
-VITE_USE_MOCK_API=true
-VITE_API_BASE_URL=/api/v1
-VITE_ASSISTANT_URL=https://charityconnect-assistant.onrender.com
+VITE_USE_MOCK_API=false
+VITE_API_BASE_URL=https://charityconnect-gateway.onrender.com/api/v1
+VITE_ASSISTANT_URL=https://charityconnect-gateway.onrender.com/api/v1
 ```
+
+## Production full stack trên Render
+
+`render.yaml` là Blueprint chuẩn của hệ thống production. Blueprint tạo một Gateway công khai, bốn private service, ba PostgreSQL độc lập và một Redis dùng chung. Frontend hiện có tại `https://charityconnect-7kep.onrender.com` được giữ riêng để không đổi URL demo.
+
+> Render chỉ cho phép một PostgreSQL Free trong mỗi workspace. Vì CharityConnect giữ đúng ba database độc lập, Blueprint dùng `basic-256mb` cho từng PostgreSQL và gắn persistent disk cho hồ sơ xác minh/ảnh bằng chứng. Đây là cấu hình có phí; không đổi ba database sang `free` vì Blueprint sẽ không tạo được đầy đủ và file upload sẽ mất sau lần redeploy.
+
+### Ranh giới dữ liệu
+
+- Identity PostgreSQL: tài khoản, Google subject, bcrypt password hash, phiên, hồ sơ tổ chức, email outbox và audit.
+- Campaign PostgreSQL: chiến dịch, ngân sách, milestone, escrow, impact report và event quyên góp đã xử lý.
+- Donation PostgreSQL: donation, receipt, ledger, Merkle proof, anchor và transactional outbox.
+- Các database chỉ liên kết bằng UUID, API nội bộ và Redis Stream. Không sao chép password hash hoặc dữ liệu cá nhân giữa service.
+- Trong từng service vẫn dùng khóa ngoại PostgreSQL thật. Ví dụ `organization_profiles.user_id` tham chiếu `users.id`; `campaign_budget_items.campaign_id` tham chiếu `campaigns.id`.
+- Khóa ngoại không thể đi xuyên ba PostgreSQL độc lập. Vì vậy `campaigns.organization_id` là UUID tham chiếu logic tới Identity: Campaign gọi private API Identity trước khi tạo, nộp hoặc duyệt chiến dịch.
+
+### Tạo Blueprint
+
+1. Trong Render chọn **New > Blueprint** và chọn repository này.
+2. Render đọc `render.yaml` để tạo Gateway, private services, databases và Redis.
+3. Nhập các biến đánh dấu `sync: false` trong dashboard; không đưa secret vào Git.
+4. Đợi bốn private service deploy thành công và Gateway trả `200` tại `/health`.
+5. Ở frontend Render đặt các biến build sau rồi chọn **Save, rebuild, and deploy**:
+
+```env
+VITE_USE_MOCK_API=false
+VITE_API_BASE_URL=https://charityconnect-gateway.onrender.com/api/v1
+VITE_ASSISTANT_URL=https://charityconnect-gateway.onrender.com/api/v1
+VITE_GOOGLE_CLIENT_ID=<Google Web Client ID>
+```
+
+6. Ở Identity nhập `GOOGLE_CLIENT_ID` bằng đúng Client ID của frontend, cùng `ADMIN_EMAIL` và `ADMIN_INITIAL_PASSWORD`. Production chỉ bootstrap một Admin khi database chưa có Admin.
+7. Trong Google Cloud, **Authorized JavaScript origins** chỉ khai báo origin, ví dụ `https://charityconnect-7kep.onrender.com`; không thêm đường dẫn và không cần Client Secret cho Google Identity Sign-In.
+
+Gateway công khai `/api/v1`; Identity, Campaign, Donation và Assistant dùng private networking. Các API ghi dữ liệu kiểm tra session với Identity. Khi Admin khóa tài khoản hoặc thu hồi phiên, JWT cũ bị từ chối; frontend cũng kiểm tra `/profile` mỗi 5 giây để tự đăng xuất.
+
+### Kiểm tra đồng bộ
+
+Admin mở tab **Tài khoản** để xem ba nguồn trạng thái:
+
+- `/api/v1/admin/sync/identity`: user Google, phiên và email outbox.
+- `/api/v1/admin/sync/campaign`: donation event đã xử lý và raised amount.
+- `/api/v1/admin/sync/donation`: donation hoàn tất, ledger và outbox chờ.
+
+Donation Service đối soát định kỳ. Event thiếu ở Campaign được đưa về outbox để phát lại; `event_id` unique đảm bảo không cộng tiền hoặc gửi email hai lần.
+
+Luồng kiểm tra nhanh tổ chức:
+
+1. Tài khoản `ORGANIZATION` nộp hồ sơ; hồ sơ và audit được ghi nguyên tử trong Identity DB.
+2. Admin thấy hồ sơ mới trong tối đa 5 giây và duyệt/từ chối trên cùng Identity DB.
+3. Trang tổ chức tự tải lại trạng thái trong tối đa 5 giây.
+4. Campaign Service chỉ cho tạo/nộp chiến dịch nếu private API Identity trả `VERIFIED`; trước khi Admin duyệt chiến dịch, trạng thái tổ chức được kiểm tra lại lần nữa.
 
 API key, Gmail token, private key và các secret khác chỉ đặt trong `.env` local hoặc dashboard cloud, không commit vào Git.
 
@@ -238,7 +290,7 @@ Không đưa API key vào frontend hoặc Git. Để chatbot dùng Claude/OpenAI
 Sau đó frontend cần biến public:
 
 ```env
-VITE_ASSISTANT_URL=https://charityconnect-assistant.onrender.com
+VITE_ASSISTANT_URL=https://charityconnect-gateway.onrender.com/api/v1
 ```
 
 Nếu đổi URL assistant trong Render/Vercel, redeploy lại frontend vì biến `VITE_*` được đóng gói lúc build.

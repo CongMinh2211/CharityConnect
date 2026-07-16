@@ -58,6 +58,44 @@ async def publish_outbox(app: FastAPI) -> None:
         await asyncio.sleep(1)
 
 
+async def reconcile_campaign_events(app: FastAPI) -> None:
+    """Khôi phục sự kiện đã hoàn tất nếu Redis bị gián đoạn trước khi Campaign ghi nhận.
+
+    Campaign dùng event_id làm khóa duy nhất, vì vậy phát lại không thể cộng tiền hai lần.
+    Identity cũng chống trùng email/thông báo bằng cùng event_id.
+    """
+    interval = max(15, int(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "60")))
+    await asyncio.sleep(min(interval, 15))
+    while True:
+        try:
+            rows = await app.state.db.fetch(
+                """SELECT d.id,d.donor_id,d.campaign_id,d.campaign_title,d.amount,d.created_at,
+                          r.receipt_number
+                   FROM donations d JOIN receipts r ON r.donation_id=d.id
+                   WHERE d.status='COMPLETED'
+                   ORDER BY d.created_at DESC LIMIT 500"""
+            )
+            for row in rows:
+                response = await campaign_request(app, f"/internal/donations/{row['id']}/reconciliation")
+                if response.status_code != 200 or response.json().get("credited") is True:
+                    continue
+                payload = {
+                    "event_id": str(row["id"]), "donor_id": str(row["donor_id"]),
+                    "campaign_id": str(row["campaign_id"]), "campaign_title": row["campaign_title"],
+                    "amount": str(row["amount"]), "receipt_number": row["receipt_number"],
+                    "completed_at": row["created_at"].isoformat(),
+                }
+                await app.state.db.execute(
+                    """INSERT INTO outbox_events(id,event_type,payload,published_at)
+                       VALUES($1,'donation.completed',$2::jsonb,NULL)
+                       ON CONFLICT(id) DO UPDATE SET payload=EXCLUDED.payload,published_at=NULL""",
+                    row["id"], json.dumps(payload),
+                )
+        except Exception as error:
+            print(f"donation-reconciliation:{error}", flush=True)
+        await asyncio.sleep(interval)
+
+
 async def consume_transparency_events(app: FastAPI) -> None:
     stream, group, consumer = "transparency.record", "donation-ledger", "donation-ledger-1"
     try:
@@ -149,6 +187,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(publish_outbox(app)),
         asyncio.create_task(consume_transparency_events(app)),
         asyncio.create_task(auto_anchor(app)),
+        asyncio.create_task(reconcile_campaign_events(app)),
     ]
     yield
     for task in tasks:
@@ -498,6 +537,32 @@ async def donation_history(request: Request, user: UserClaims = Depends(require_
         UUID(user.id),
     )
     return [dict(row) for row in rows]
+
+
+@app.get("/admin/sync/donation")
+async def donation_sync_status(request: Request, user: UserClaims = Depends(require_user)) -> dict:
+    require_role(user, "ADMIN")
+    db = request.app.state.db
+    totals = await db.fetchrow(
+        """SELECT
+             (SELECT count(*) FROM donations WHERE status='COMPLETED') AS completed_donations,
+             (SELECT COALESCE(sum(amount),0) FROM donations WHERE status='COMPLETED') AS completed_amount,
+             (SELECT count(*) FROM donations WHERE status='PENDING_REVIEW') AS pending_review,
+             (SELECT count(*) FROM outbox_events WHERE published_at IS NULL) AS pending_outbox,
+             (SELECT count(*) FROM ledger_entries WHERE event_type='DONATION_COMPLETED') AS ledger_donation_entries"""
+    )
+    campaigns = await db.fetch(
+        """SELECT campaign_id::text,COALESCE(sum(amount),0) AS amount,count(*) AS event_count
+           FROM donations WHERE status='COMPLETED' GROUP BY campaign_id ORDER BY campaign_id"""
+    )
+    return {
+        "service": "donation", "as_of": datetime.now(timezone.utc).isoformat(), "status": "READY",
+        "totals": {key: int(value or 0) for key, value in dict(totals).items()},
+        "campaigns": [
+            {"campaign_id": row["campaign_id"], "amount": int(row["amount"]), "event_count": int(row["event_count"])}
+            for row in campaigns
+        ],
+    }
 
 
 def _statement_font() -> str:

@@ -17,6 +17,8 @@
     "/analytics/campaigns/public": { "get": { "summary": "Thống kê chiến dịch công khai", "responses": { "200": { "description": "Public campaign analytics" } } } },
     "/analytics/campaigns/organization": { "get": { "summary": "Thống kê chiến dịch của tổ chức", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Organization analytics" } } } },
     "/analytics/campaigns/admin": { "get": { "summary": "Thống kê chiến dịch toàn hệ thống", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Admin analytics" } } } }
+    ,"/admin/sync/campaign": { "get": { "summary": "Campaign donation synchronization status", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Processed donation events and raised amount counters" } } } }
+    ,"/internal/donations/{eventId}/reconciliation": { "get": { "summary": "Internal donation event reconciliation status", "parameters": [{ "name": "eventId", "in": "path", "required": true, "schema": { "type": "string" } }, { "name": "x-internal-token", "in": "header", "required": true, "schema": { "type": "string", "writeOnly": true } }], "responses": { "200": { "description": "Idempotent reconciliation status" }, "401": { "description": "Invalid internal token" } } } }
   },
   "components": { "securitySchemes": { "bearerAuth": { "type": "http", "scheme": "bearer", "bearerFormat": "JWT" } } }
 }

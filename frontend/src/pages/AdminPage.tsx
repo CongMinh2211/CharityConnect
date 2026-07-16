@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, formatVnd } from "../lib/api";
-import type { AccountUser, AdminReport, AuditLogEntry, Campaign, ImpactReport, LedgerAnchor, PendingDonation, RiskAssessment, Role, UserStatus } from "../types";
+import type { AccountUser, AdminReport, AuditLogEntry, Campaign, ImpactReport, LedgerAnchor, PendingDonation, RiskAssessment, Role, ServiceSyncStatus, UserStatus } from "../types";
 import { categoryLabel } from "./ReportPage";
 
 interface OrganizationReview {
@@ -12,8 +12,15 @@ interface OrganizationReview {
   legal_name: string;
   registration_number: string;
   email: string;
+  name?: string;
   status: string;
   description: string;
+  account_role?: Role;
+  account_status?: UserStatus;
+  linked_account?: boolean;
+  active_session_count?: number;
+  submitted_at?: string;
+  updated_at?: string;
 }
 
 interface AdminUserActionResponse {
@@ -44,13 +51,16 @@ export function AdminPage(): JSX.Element {
   const [userFeedback, setUserFeedback] = useState("");
   const tab = (params.get("tab") as Tab) || "queue";
 
-  const organizations = useQuery({ queryKey: ["admin-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations?status=PENDING") });
-  const allOrganizations = useQuery({ queryKey: ["admin-all-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations"), enabled: tab === "organizations" });
-  const campaigns = useQuery({ queryKey: ["admin-campaigns"], queryFn: () => api<Campaign[]>("/admin/campaigns?status=PENDING_REVIEW") });
-  const reports = useQuery({ queryKey: ["admin-impact-reports"], queryFn: () => api<ImpactReport[]>("/admin/impact-reports?status=PENDING_REVIEW") });
-  const pendingDonations = useQuery({ queryKey: ["admin-pending-donations"], queryFn: () => api<PendingDonation[]>("/admin/donations/pending") });
-  const campaignReports = useQuery({ queryKey: ["admin-reports"], queryFn: () => api<AdminReport[]>("/admin/reports") });
-  const users = useQuery({ queryKey: ["admin-users"], queryFn: () => api<AccountUser[]>("/admin/users"), enabled: tab === "users" });
+  const organizations = useQuery({ queryKey: ["admin-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations?status=PENDING"), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const allOrganizations = useQuery({ queryKey: ["admin-all-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations"), enabled: tab === "organizations", refetchInterval: tab === "organizations" ? 5_000 : false, refetchOnWindowFocus: true });
+  const campaigns = useQuery({ queryKey: ["admin-campaigns"], queryFn: () => api<Campaign[]>("/admin/campaigns?status=PENDING_REVIEW"), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const reports = useQuery({ queryKey: ["admin-impact-reports"], queryFn: () => api<ImpactReport[]>("/admin/impact-reports?status=PENDING_REVIEW"), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const pendingDonations = useQuery({ queryKey: ["admin-pending-donations"], queryFn: () => api<PendingDonation[]>("/admin/donations/pending"), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const campaignReports = useQuery({ queryKey: ["admin-reports"], queryFn: () => api<AdminReport[]>("/admin/reports"), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const users = useQuery({ queryKey: ["admin-users"], queryFn: () => api<AccountUser[]>("/admin/users"), enabled: tab === "users", refetchInterval: tab === "users" ? 5_000 : false });
+  const identitySync = useQuery({ queryKey: ["admin-sync", "identity"], queryFn: () => api<ServiceSyncStatus>("/admin/sync/identity"), enabled: tab === "users", refetchInterval: tab === "users" ? 10_000 : false });
+  const campaignSync = useQuery({ queryKey: ["admin-sync", "campaign"], queryFn: () => api<ServiceSyncStatus>("/admin/sync/campaign"), enabled: tab === "users", refetchInterval: tab === "users" ? 10_000 : false });
+  const donationSync = useQuery({ queryKey: ["admin-sync", "donation"], queryFn: () => api<ServiceSyncStatus>("/admin/sync/donation"), enabled: tab === "users", refetchInterval: tab === "users" ? 10_000 : false });
   const risks = useQuery({ queryKey: ["admin-risks"], queryFn: () => api<RiskAssessment[]>("/admin/campaign-risks") });
   const identityAudit = useQuery({ queryKey: ["admin-audit", "identity"], queryFn: () => api<AuditLogEntry[]>("/admin/audit-logs/identity"), enabled: tab === "audit" });
   const campaignAudit = useQuery({ queryKey: ["admin-audit", "campaign"], queryFn: () => api<AuditLogEntry[]>("/admin/audit-logs/campaign"), enabled: tab === "audit" });
@@ -59,15 +69,29 @@ export function AdminPage(): JSX.Element {
   const anchor = useMutation({ mutationFn: () => api<LedgerAnchor>("/admin/transparency/anchors", { method: "POST" }), onSuccess: () => void client.invalidateQueries({ queryKey: ["public-anchors"] }) });
   const organizationAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: "VERIFIED" | "REJECTED"; reason?: string }) => api(`/admin/organizations/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: ["admin-organizations"] }); void client.invalidateQueries({ queryKey: ["admin-all-organizations"] }); }
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["admin-organizations"] });
+      void client.invalidateQueries({ queryKey: ["admin-all-organizations"] });
+      void client.invalidateQueries({ queryKey: ["admin-sync", "identity"] });
+      void client.invalidateQueries({ queryKey: ["analytics-users-public"] });
+    }
   });
   const campaignAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: "APPROVED" | "REJECTED"; reason?: string }) => api(`/admin/campaigns/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["admin-campaigns"] })
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["admin-campaigns"] });
+      void client.invalidateQueries({ queryKey: ["admin-sync", "campaign"] });
+      void client.invalidateQueries({ queryKey: ["campaigns"] });
+      void client.invalidateQueries({ queryKey: ["analytics-campaigns-public"] });
+    }
   });
   const reportAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: "VERIFIED" | "REJECTED"; reason?: string }) => api(`/admin/impact-reports/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["admin-impact-reports"] })
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["admin-impact-reports"] });
+      void client.invalidateQueries({ queryKey: ["public-impact-reports"] });
+      void client.invalidateQueries({ queryKey: ["financial-plan"] });
+    }
   });
   const userStatusAction = useMutation({
     mutationFn: ({ id, status, reason }: { id: string; status: UserStatus; reason?: string }) => api<AdminUserActionResponse & AccountUser>(`/admin/users/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
@@ -108,6 +132,7 @@ export function AdminPage(): JSX.Element {
       api(`/admin/donations/${id}/${decision}`, { method: "POST", body: decision === "reject" ? JSON.stringify({ reason }) : undefined }),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ["admin-pending-donations"] });
+      void client.invalidateQueries({ queryKey: ["admin-sync"] });
       for (const key of [["analytics-donations-public"], ["analytics-campaigns-public"], ["top-donors"], ["public-ledger-statement"], ["public-ledger"], ["ledger-verification"]]) {
         void client.invalidateQueries({ queryKey: key, refetchType: "none" });
       }
@@ -140,6 +165,11 @@ export function AdminPage(): JSX.Element {
           </button>
         ))}
       </nav>
+      {organizations.error && (
+        <p className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-700" role="alert">
+          Không kết nối được Identity Service nên chưa thể tải hàng đợi tổ chức. Dữ liệu không bị xem là rỗng; hệ thống sẽ tự thử lại sau 5 giây.
+        </p>
+      )}
 
       <div className="card mt-4 p-5">
         <h2 className="text-lg font-black">Bản đồ dữ liệu quản trị</h2>
@@ -252,7 +282,7 @@ export function AdminPage(): JSX.Element {
           </div>
         )}
 
-        {tab === "organizations" && <OrganizationsTable items={allOrganizations.data ?? []} loading={allOrganizations.isLoading} onDetail={setSelectedOrganization} />}
+        {tab === "organizations" && <OrganizationsTable items={allOrganizations.data ?? []} loading={allOrganizations.isLoading} error={allOrganizations.error as Error | null} onDetail={setSelectedOrganization} />}
         {tab === "users" && (
           <div className="space-y-4">
             {userFeedback && (
@@ -266,9 +296,11 @@ export function AdminPage(): JSX.Element {
                 {(userStatusAction.error ?? userProfileAction.error ?? userPasswordResetAction.error ?? userRevokeSessionsAction.error)?.message}
               </p>
             )}
+            <SyncStatusPanel identity={identitySync.data} campaign={campaignSync.data} donation={donationSync.data} loading={identitySync.isLoading || campaignSync.isLoading || donationSync.isLoading} error={(identitySync.error ?? campaignSync.error ?? donationSync.error) as Error | null} />
             <UsersTable
               items={users.data ?? []}
               loading={users.isLoading}
+              error={users.error as Error | null}
               busy={userStatusAction.isPending || userProfileAction.isPending || userPasswordResetAction.isPending || userRevokeSessionsAction.isPending}
               onEdit={setSelectedUser}
               onStatus={(item, status) => {
@@ -375,6 +407,9 @@ function OrganizationDetailModal({ item, busy, onClose, onApprove, onReject }: {
                 <div><dt className="font-black text-slate-500">Tên pháp lý</dt><dd className="mt-1 text-ink">{item.legal_name}</dd></div>
                 <div><dt className="font-black text-slate-500">Mã đăng ký</dt><dd className="mt-1 font-mono text-ink">{item.registration_number}</dd></div>
                 <div><dt className="font-black text-slate-500">Trạng thái</dt><dd className="mt-1"><StatusBadge status={item.status} /></dd></div>
+                <div><dt className="font-black text-slate-500">Liên kết tài khoản</dt><dd className="mt-1">{item.linked_account === false ? "Thiếu liên kết" : `Đã liên kết · ${item.account_status ?? "ACTIVE"} · ${item.active_session_count ?? 0} phiên`}</dd></div>
+                {item.submitted_at && <div><dt className="font-black text-slate-500">Nộp lúc</dt><dd className="mt-1">{new Date(item.submitted_at).toLocaleString("vi-VN")}</dd></div>}
+                {item.updated_at && <div><dt className="font-black text-slate-500">Cập nhật gần nhất</dt><dd className="mt-1">{new Date(item.updated_at).toLocaleString("vi-VN")}</dd></div>}
               </dl>
             </InfoBlock>
 
@@ -419,7 +454,7 @@ function InfoBlock({ icon, title, children }: { icon: JSX.Element; title: string
   );
 }
 
-function OrganizationsTable({ items, loading, onDetail }: { items: OrganizationReview[]; loading: boolean; onDetail: (item: OrganizationReview) => void }): JSX.Element {
+function OrganizationsTable({ items, loading, error, onDetail }: { items: OrganizationReview[]; loading: boolean; error: Error | null; onDetail: (item: OrganizationReview) => void }): JSX.Element {
   const counts = items.reduce<Record<string, number>>((acc, item) => { acc[item.status] = (acc[item.status] ?? 0) + 1; return acc; }, {});
   return (
     <section className="card overflow-hidden">
@@ -434,7 +469,11 @@ function OrganizationsTable({ items, loading, onDetail }: { items: OrganizationR
           <span className="rounded-full bg-rose-50 px-3 py-1 text-rose-700">Từ chối: {counts.REJECTED ?? 0}</span>
         </div>
       </div>
-      {loading ? <div className="skeleton m-5 h-64" /> : (
+      {loading ? <div className="skeleton m-5 h-64" /> : error ? (
+        <p className="m-5 rounded-2xl bg-rose-50 p-4 text-sm font-bold text-rose-700">
+          Không tải được dữ liệu tổ chức: {error.message}
+        </p>
+      ) : (
         <div className="divide-y divide-ink/10">
           {items.map((item) => (
             <div key={item.user_id} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
@@ -458,9 +497,50 @@ function OrganizationsTable({ items, loading, onDetail }: { items: OrganizationR
   );
 }
 
-function UsersTable({ items, loading, busy, onStatus, onEdit }: {
+function SyncStatusPanel({ identity, campaign, donation, loading, error }: {
+  identity?: ServiceSyncStatus; campaign?: ServiceSyncStatus; donation?: ServiceSyncStatus;
+  loading: boolean; error: Error | null;
+}): JSX.Element {
+  const campaignAmount = campaign?.totals.processed_amount ?? 0;
+  const donationAmount = donation?.totals.completed_amount ?? 0;
+  const amountDifference = Math.abs(campaignAmount - donationAmount);
+  const campaignEvents = campaign?.totals.processed_donation_events ?? 0;
+  const donationEvents = donation?.totals.completed_donations ?? 0;
+  const eventDifference = Math.abs(campaignEvents - donationEvents);
+  const pendingOutbox = (campaign?.totals.pending_outbox ?? 0) + (donation?.totals.pending_outbox ?? 0);
+  const synchronized = Boolean(identity && campaign && donation) && amountDifference === 0 && eventDifference === 0 && pendingOutbox === 0;
+  return (
+    <section className="card p-5" aria-live="polite">
+      <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[.16em] text-brand-700">Database consistency</p>
+          <h2 className="mt-2 text-xl font-black">Trạng thái đồng bộ liên service</h2>
+        </div>
+        <span className={synchronized ? "rounded-full bg-emerald-100 px-3 py-1 text-sm font-black text-emerald-800" : "rounded-full bg-amber-100 px-3 py-1 text-sm font-black text-amber-800"}>
+          {loading ? "Đang đối soát" : synchronized ? "Đã đồng bộ" : "Đang đồng bộ"}
+        </span>
+      </div>
+      {error && <p className="mt-4 rounded-2xl bg-rose-50 p-3 text-sm font-bold text-rose-700">Không tải đủ trạng thái ba service: {error.message}</p>}
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <SyncMetric label="Tài khoản" value={identity?.totals.users_total ?? 0} detail={`${identity?.totals.google_accounts ?? 0} tài khoản Google`} />
+        <SyncMetric label="Hồ sơ tổ chức" value={identity?.totals.organization_profiles ?? 0} detail={`${identity?.totals.organization_accounts ?? 0} tài khoản · ${identity?.totals.pending_organizations ?? 0} chờ duyệt · ${campaign?.totals.linked_organizations ?? 0} đã có chiến dịch`} />
+        <SyncMetric label="Donation hoàn tất" value={donationEvents} detail={formatVnd(donationAmount)} />
+        <SyncMetric label="Campaign đã ghi nhận" value={campaignEvents} detail={formatVnd(campaignAmount)} />
+        <SyncMetric label="Sai lệch" value={eventDifference} detail={`${formatVnd(amountDifference)} · ${pendingOutbox} outbox chờ`} alert={!synchronized && !loading} />
+      </div>
+      <p className="mt-4 text-xs text-slate-500">Identity giữ tài khoản; Donation giữ giao dịch; Campaign nhận số tiền bằng Redis Stream và event_id chống ghi trùng. Tự cập nhật mỗi 10 giây.</p>
+    </section>
+  );
+}
+
+function SyncMetric({ label, value, detail, alert = false }: { label: string; value: number; detail: string; alert?: boolean }): JSX.Element {
+  return <div className={alert ? "rounded-2xl bg-rose-50 p-4" : "rounded-2xl bg-sage-100 p-4"}><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-2xl font-black">{value.toLocaleString("vi-VN")}</p><p className="mt-1 text-xs text-slate-500">{detail}</p></div>;
+}
+
+function UsersTable({ items, loading, error, busy, onStatus, onEdit }: {
   items: AccountUser[];
   loading: boolean;
+  error: Error | null;
   busy: boolean;
   onStatus: (item: AccountUser, status: UserStatus) => void;
   onEdit: (item: AccountUser) => void;
@@ -472,7 +552,12 @@ function UsersTable({ items, loading, busy, onStatus, onEdit }: {
         <h2 className="text-xl font-black">Quản lý tài khoản</h2>
         <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500">Admin có thể cập nhật tên/email, khóa tài khoản, đăng xuất mọi thiết bị hoặc gửi liên kết tạo/đặt lại mật khẩu. Hệ thống không bao giờ hiển thị mật khẩu hiện tại và Google cũng không cung cấp mật khẩu cho CharityConnect.</p>
       </div>
-      {loading ? <div className="skeleton m-5 h-64" /> : (
+      {loading ? <div className="skeleton m-5 h-64" /> : error ? (
+        <div className="m-5 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-700" role="alert">
+          Không kết nối được Identity Service. Dữ liệu tài khoản chưa được tải; vui lòng kiểm tra Gateway và PostgreSQL.
+          <span className="mt-1 block font-normal">{error.message}</span>
+        </div>
+      ) : (
         <>
           <div className="grid gap-3 p-4 md:hidden">
             {items.map((item) => (

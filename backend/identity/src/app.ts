@@ -57,9 +57,18 @@ const googleLoginSchema = z.object({
   terms_accepted: z.literal(true),
   name: z.string().trim().min(2).max(120).optional(),
   ...profileContactFields,
+}).superRefine((input, context) => {
+  if (input.role === "ORGANIZATION" && !input.organization_name) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["organization_name"], message: "Vui lòng nhập tên tổ chức." });
+  }
 });
 const preferenceSchema = z.object({ saved: z.boolean(), following: z.boolean() });
 const googleClient = new OAuth2Client();
+
+function serviceUrl(value: string | undefined, fallback: string): string {
+  const raw = value || fallback;
+  return /^https?:\/\//i.test(raw) ? raw.replace(/\/$/, "") : `http://${raw.replace(/\/$/, "")}`;
+}
 
 type GoogleIdentity = {
   subject: string;
@@ -219,8 +228,14 @@ app.post("/auth/google", loginLimiter, async (req, res, next) => {
   try {
     const input = googleLoginSchema.parse(req.body);
     const identity = await verifyGoogleCredential(input.credential);
-    const matched = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
-      "SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,COALESCE(status::text,'ACTIVE') AS status FROM users WHERE google_subject=$1",
+    const matched = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null; google_connected: boolean; has_local_password: boolean; auth_provider: string }>(
+      `SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,
+              COALESCE(status::text,'ACTIVE') AS status,
+              (google_subject IS NOT NULL) AS google_connected,
+              (password_hash IS NOT NULL) AS has_local_password,
+              CASE WHEN google_subject IS NOT NULL AND password_hash IS NOT NULL THEN 'GOOGLE_AND_PASSWORD'
+                   WHEN google_subject IS NOT NULL THEN 'GOOGLE' ELSE 'PASSWORD' END AS auth_provider
+       FROM users WHERE google_subject=$1`,
       [identity.subject],
     );
     let user = matched[0];
@@ -245,8 +260,12 @@ app.post("/auth/google", loginLimiter, async (req, res, next) => {
         return;
       }
       if (existing) {
-        const linked = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
-          "UPDATE users SET google_subject=$1,updated_at=now() WHERE id=$2 AND google_subject IS NULL RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name,COALESCE(status::text,'ACTIVE') AS status",
+        const linked = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null; google_connected: boolean; has_local_password: boolean; auth_provider: string }>(
+          `UPDATE users SET google_subject=$1,updated_at=now() WHERE id=$2 AND google_subject IS NULL
+           RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name,
+                     COALESCE(status::text,'ACTIVE') AS status,true AS google_connected,
+                     (password_hash IS NOT NULL) AS has_local_password,
+                     CASE WHEN password_hash IS NOT NULL THEN 'GOOGLE_AND_PASSWORD' ELSE 'GOOGLE' END AS auth_provider`,
           [identity.subject, existing.id],
         );
         user = linked[0];
@@ -256,15 +275,18 @@ app.post("/auth/google", loginLimiter, async (req, res, next) => {
         }
         await audit(user.id, "GOOGLE_ACCOUNT_LINKED", "USER", user.id, null, { provider: "GOOGLE" }, { actorRole: user.role, ip: req.ip, userAgent: req.headers["user-agent"] as string | undefined });
       } else {
-        const createdRows = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null }>(
+        const createdRows = await query<{ id: string; email: string; name: string; role: Role; status: "ACTIVE" | "DISABLED"; phone: string | null; province: string | null; address: string | null; date_of_birth: string | null; organization_name: string | null; google_connected: boolean; has_local_password: boolean; auth_provider: string }>(
           `WITH new_user AS (
              INSERT INTO users(email,password_hash,name,role,google_subject,phone,province,address,date_of_birth,organization_name,terms_accepted_at)
              VALUES($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,now())
-             RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name,COALESCE(status::text,'ACTIVE') AS status
+             RETURNING id,email,name,role,phone,province,address,date_of_birth,organization_name,
+                       COALESCE(status::text,'ACTIVE') AS status,true AS google_connected,
+                       false AS has_local_password,'GOOGLE'::text AS auth_provider
            ), queued AS (
              INSERT INTO email_outbox(event_id,template,recipient_user_id,payload)
              SELECT id::text,'WELCOME',id,jsonb_build_object('role',role,'provider','GOOGLE') FROM new_user
-           ) SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,status FROM new_user`,
+           ) SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,status,
+                    google_connected,has_local_password,auth_provider FROM new_user`,
           [identity.email, input.name ?? identity.name, input.role, identity.subject, input.phone ?? null, input.province ?? null, input.address ?? null, input.date_of_birth ?? null, input.organization_name ?? null],
         );
         user = createdRows[0];
@@ -284,7 +306,14 @@ app.post("/auth/google", loginLimiter, async (req, res, next) => {
     res.status(created ? 201 : 200).json({
       token: signToken({ sub: user.id, email: user.email, name: user.name, role: user.role, session_id: sessionId }),
       refresh_token: refreshToken,
-      user: { id: user.id, email: user.email, name: user.name, role: user.role, status: user.status, phone: user.phone, province: user.province, address: user.address, date_of_birth: user.date_of_birth, organization_name: user.organization_name },
+      user: {
+        id: user.id, email: user.email, name: user.name, role: user.role, status: user.status,
+        phone: user.phone, province: user.province, address: user.address,
+        date_of_birth: user.date_of_birth, organization_name: user.organization_name,
+        google_connected: user.google_connected ?? true,
+        has_local_password: user.has_local_password ?? false,
+        auth_provider: user.auth_provider ?? "GOOGLE",
+      },
       ...(created ? { email_notification: "QUEUED" } : {}),
     });
   } catch (error) {
@@ -382,7 +411,7 @@ app.put("/me/campaign-preferences/:campaignId", authenticate, authorize("DONOR")
       res.json({ campaign_id: campaignId, saved: false, following: false });
       return;
     }
-    const campaignResponse = await fetch(`${process.env.CAMPAIGN_SERVICE_URL}/internal/campaigns/${campaignId}/owner`, {
+    const campaignResponse = await fetch(`${serviceUrl(process.env.CAMPAIGN_SERVICE_URL, "localhost:3002")}/internal/campaigns/${campaignId}/owner`, {
       headers: { "x-internal-token": process.env.INTERNAL_SERVICE_TOKEN ?? "local-internal-token" },
     });
     if (!campaignResponse.ok) { res.status(404).json({ message: "Không tìm thấy chiến dịch" }); return; }
@@ -446,16 +475,40 @@ app.post("/organizations/application", authenticate, authorize("ORGANIZATION"), 
       registrationNumber: z.string().trim().min(3),
       description: z.string().trim().max(2000).default("")
     }).parse(req.body);
-    const rows = await query<{ user_id: string; status: OrganizationStatus }>(
-      `INSERT INTO organization_profiles(user_id,legal_name,registration_number,description,document_path,status,rejection_reason,submitted_at)
-       VALUES ($1,$2,$3,$4,$5,'PENDING',NULL,now())
-       ON CONFLICT (user_id) DO UPDATE SET legal_name=EXCLUDED.legal_name, registration_number=EXCLUDED.registration_number,
-          description=EXCLUDED.description, document_path=COALESCE(EXCLUDED.document_path,organization_profiles.document_path),
-          status='PENDING', rejection_reason=NULL, submitted_at=now(), verification_expires_at=NULL
-       RETURNING user_id,status`,
-      [req.user!.sub, input.legalName, input.registrationNumber, input.description, req.file?.path ?? null]
+    const rows = await query<{ user_id: string; status: OrganizationStatus; updated_at: string }>(
+      `WITH upserted AS (
+         INSERT INTO organization_profiles(
+           user_id,legal_name,registration_number,description,document_path,status,
+           rejection_reason,submitted_at,reviewed_at,reviewed_by,verification_expires_at,updated_at
+         )
+         VALUES ($1,$2,$3,$4,$5,'PENDING',NULL,now(),NULL,NULL,NULL,now())
+         ON CONFLICT (user_id) DO UPDATE SET
+           legal_name=EXCLUDED.legal_name,
+           registration_number=EXCLUDED.registration_number,
+           description=EXCLUDED.description,
+           document_path=COALESCE(EXCLUDED.document_path,organization_profiles.document_path),
+           status='PENDING',
+           rejection_reason=NULL,
+           submitted_at=now(),
+           reviewed_at=NULL,
+           reviewed_by=NULL,
+           verification_expires_at=NULL,
+           updated_at=now()
+         RETURNING *
+       ), logged AS (
+         INSERT INTO audit_logs(
+           actor_id,action,entity_type,entity_id,new_value,actor_role,ip_address,user_agent
+         )
+         SELECT $1,'ORGANIZATION_SUBMITTED','ORGANIZATION',user_id::text,
+                to_jsonb(upserted)-'document_path',$6,$7,$8
+         FROM upserted
+       )
+       SELECT user_id,status,updated_at FROM upserted`,
+      [
+        req.user!.sub, input.legalName, input.registrationNumber, input.description,
+        req.file?.path ?? null, req.user!.role, req.ip, req.headers["user-agent"] ?? null,
+      ],
     );
-    await audit(req.user!.sub, "ORGANIZATION_SUBMITTED", "ORGANIZATION", req.user!.sub, null, rows[0]);
     res.status(201).json(rows[0]);
   } catch (error) { next(error); }
 });
@@ -505,7 +558,12 @@ app.get("/admin/organizations", authenticate, authorize("ADMIN"), async (req, re
   try {
     const status = z.enum(["PENDING", "VERIFIED", "REJECTED"]).optional().parse(req.query.status);
     const rows = await query(
-      `SELECT o.*,u.email,u.name FROM organization_profiles o JOIN users u ON u.id=o.user_id
+      `SELECT o.*,u.email,u.name,u.role AS account_role,
+              COALESCE(u.status::text,'ACTIVE') AS account_status,
+              true AS linked_account,
+              (SELECT count(*)::int FROM account_sessions s
+               WHERE s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now()) AS active_session_count
+       FROM organization_profiles o JOIN users u ON u.id=o.user_id
        WHERE ($1::organization_status IS NULL OR o.status=$1) ORDER BY o.submitted_at ASC`, [status ?? null]
     );
     res.json(rows);
@@ -520,14 +578,37 @@ app.patch("/admin/organizations/:id/status", authenticate, authorize("ADMIN"), a
       res.status(400).json({ message: "Cần nhập lý do từ chối" });
       return;
     }
-    const before = (await query<{ status: OrganizationStatus }>("SELECT status FROM organization_profiles WHERE user_id=$1", [organizationId]))[0];
-    if (!before) { res.status(404).json({ message: "Không tìm thấy tổ chức" }); return; }
     const rows = await query(
-      `UPDATE organization_profiles SET status=$1,rejection_reason=$2,reviewed_at=now(),reviewed_by=$3,
-         verification_expires_at=CASE WHEN $1='VERIFIED' THEN now()+interval '1 year' ELSE NULL END
-       WHERE user_id=$4 RETURNING *`, [input.status, input.reason ?? null, req.user!.sub, organizationId]
+      `WITH previous AS MATERIALIZED (
+         SELECT * FROM organization_profiles WHERE user_id=$1 FOR UPDATE
+       ), updated AS (
+         UPDATE organization_profiles o SET
+           status=$2,
+           rejection_reason=$3,
+           reviewed_at=now(),
+           reviewed_by=$4,
+           verification_expires_at=CASE WHEN $2='VERIFIED' THEN now()+interval '1 year' ELSE NULL END,
+           updated_at=now()
+         FROM previous p WHERE o.user_id=p.user_id
+         RETURNING o.*
+       ), logged AS (
+         INSERT INTO audit_logs(
+           actor_id,action,entity_type,entity_id,previous_value,new_value,
+           actor_role,reason,ip_address,user_agent
+         )
+         SELECT $4,$5,'ORGANIZATION',u.user_id::text,
+                to_jsonb(p)-'document_path',to_jsonb(u)-'document_path',
+                $6,$3,$7,$8
+         FROM previous p JOIN updated u ON u.user_id=p.user_id
+       )
+       SELECT * FROM updated`,
+      [
+        organizationId, input.status, input.reason ?? null, req.user!.sub,
+        `ORGANIZATION_${input.status}`, req.user!.role, req.ip,
+        req.headers["user-agent"] ?? null,
+      ],
     );
-    await audit(req.user!.sub, `ORGANIZATION_${input.status}`, "ORGANIZATION", organizationId, before, rows[0]);
+    if (!rows[0]) { res.status(404).json({ message: "Không tìm thấy tổ chức" }); return; }
     res.json(rows[0]);
   } catch (error) { next(error); }
 });
@@ -543,6 +624,21 @@ app.get("/internal/organizations/:userId/status", internalOnly, async (req, res,
       [req.params.userId]
     );
     res.json(rows[0] ?? { status: null });
+  } catch (error) { next(error); }
+});
+
+app.get("/internal/sessions/:sessionId/status", internalOnly, async (req, res, next) => {
+  try {
+    const userId = z.string().min(1).max(100).parse(req.query.user_id);
+    const rows = await query<{ active: boolean; user_status: string }>(
+      `SELECT (s.revoked_at IS NULL AND s.expires_at>now()
+               AND COALESCE(u.status::text,'ACTIVE')='ACTIVE') AS active,
+              COALESCE(u.status::text,'ACTIVE') AS user_status
+       FROM account_sessions s JOIN users u ON u.id=s.user_id
+       WHERE s.id=$1 AND s.user_id=$2`,
+      [req.params.sessionId, userId],
+    );
+    res.json(rows[0] ?? { active: false, user_status: "UNKNOWN" });
   } catch (error) { next(error); }
 });
 

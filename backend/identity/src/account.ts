@@ -269,6 +269,36 @@ accountRouter.get("/admin/users", authenticate, authorize("ADMIN"), async (req, 
   } catch (error) { next(error); }
 });
 
+accountRouter.get("/admin/sync/identity", authenticate, authorize("ADMIN"), async (_req, res, next) => {
+  try {
+    const rows = await query<{
+      users_total: string; google_accounts: string; disabled_accounts: string;
+      active_sessions: string; pending_email_outbox: string; failed_email_outbox: string;
+      processed_notification_events: string; organization_accounts: string;
+      organization_profiles: string; pending_organizations: string; verified_organizations: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM users)::text AS users_total,
+         (SELECT count(*) FROM users WHERE google_subject IS NOT NULL)::text AS google_accounts,
+         (SELECT count(*) FROM users WHERE COALESCE(status::text,'ACTIVE')='DISABLED')::text AS disabled_accounts,
+         (SELECT count(*) FROM account_sessions WHERE revoked_at IS NULL AND expires_at>now())::text AS active_sessions,
+         (SELECT count(*) FROM email_outbox WHERE status IN ('PENDING','SENDING'))::text AS pending_email_outbox,
+         (SELECT count(*) FROM email_outbox WHERE status='FAILED')::text AS failed_email_outbox,
+         (SELECT count(*) FROM processed_notification_events)::text AS processed_notification_events,
+         (SELECT count(*) FROM users WHERE role='ORGANIZATION')::text AS organization_accounts,
+         (SELECT count(*) FROM organization_profiles)::text AS organization_profiles,
+         (SELECT count(*) FROM organization_profiles WHERE status='PENDING')::text AS pending_organizations,
+         (SELECT count(*) FROM organization_profiles WHERE status='VERIFIED'
+            AND verification_expires_at>now())::text AS verified_organizations`,
+    );
+    const value = rows[0];
+    res.json({
+      service: "identity", as_of: new Date().toISOString(), status: "READY",
+      totals: Object.fromEntries(Object.entries(value ?? {}).map(([key, amount]) => [key, Number(amount)])),
+    });
+  } catch (error) { next(error); }
+});
+
 // Admin chỉ được sửa tên/email đăng nhập, không được đổi role hay xem password hash.
 // Nếu email đổi, tất cả session và refresh token bị thu hồi nguyên tử trong cùng câu lệnh SQL.
 accountRouter.patch("/admin/users/:id/profile", authenticate, authorize("ADMIN"), async (req: AuthRequest, res, next) => {

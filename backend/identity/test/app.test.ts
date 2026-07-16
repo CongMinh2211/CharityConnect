@@ -32,6 +32,21 @@ describe("identity HTTP API", () => {
     expect(response.body.totals).toEqual({ donor_count: 12, verified_organization_count: 3 });
   });
 
+  it("reports identity synchronization and internal session status", async () => {
+    queryMock.mockResolvedValueOnce([{
+      users_total: "4", google_accounts: "1", disabled_accounts: "0", active_sessions: "2",
+      pending_email_outbox: "0", failed_email_outbox: "0", processed_notification_events: "3",
+    }] as never);
+    const sync = await request(app).get("/admin/sync/identity").set("Authorization", `Bearer ${adminToken}`);
+    expect(sync.status).toBe(200);
+    expect(sync.body.totals).toMatchObject({ users_total: 4, google_accounts: 1, active_sessions: 2 });
+
+    queryMock.mockResolvedValueOnce([{ active: true, user_status: "ACTIVE" }] as never);
+    const session = await request(app).get("/internal/sessions/session-1/status?user_id=user-1").set("x-internal-token", "local-internal-token");
+    expect(session.status).toBe(200);
+    expect(session.body).toEqual({ active: true, user_status: "ACTIVE" });
+  });
+
   it("exposes a public organization verification dossier", async () => {
     queryMock
       .mockResolvedValueOnce([{
@@ -108,6 +123,13 @@ describe("identity HTTP API", () => {
   it("does not accept a Google credential while server configuration is absent", async () => {
     const response = await request(app).post("/auth/google").send({ credential: "x".repeat(30), terms_accepted: true });
     expect(response.status).toBe(503);
+  });
+
+  it("requires an organization name when a new Google organization account is requested", async () => {
+    const response = await request(app).post("/auth/google").send({
+      credential: "x".repeat(30), role: "ORGANIZATION", terms_accepted: true,
+    });
+    expect(response.status).toBe(400);
   });
 
   it("links an existing account only after Google provides an authoritative email", async () => {
@@ -354,18 +376,20 @@ describe("identity HTTP API", () => {
     queryMock.mockResolvedValueOnce([{ user_id: "org", status: "PENDING" }] as never);
     const submitted = await request(app).post("/organizations/application").set("Authorization", `Bearer ${orgToken}`).field("legalName", "Quỹ Ánh Dương").field("registrationNumber", "QD-01").field("description", "Hỗ trợ cộng đồng");
     expect(submitted.status).toBe(201);
-    expect(auditMock).toHaveBeenCalled();
+    expect(queryMock.mock.calls[0][0]).toContain("ORGANIZATION_SUBMITTED");
     queryMock.mockResolvedValueOnce([{ legal_name: "Quỹ Ánh Dương", status: "PENDING" }] as never);
     expect((await request(app).get("/organizations/me").set("Authorization", `Bearer ${orgToken}`)).status).toBe(200);
   });
 
   it("lists and reviews organizations as admin", async () => {
-    queryMock.mockResolvedValueOnce([{ user_id: "org", status: "PENDING" }] as never);
-    expect((await request(app).get("/admin/organizations?status=PENDING").set("Authorization", `Bearer ${adminToken}`)).status).toBe(200);
-    queryMock.mockResolvedValueOnce([{ status: "PENDING" }] as never).mockResolvedValueOnce([{ user_id: "org", status: "VERIFIED" }] as never);
+    queryMock.mockResolvedValueOnce([{ user_id: "org", status: "PENDING", linked_account: true, account_status: "ACTIVE" }] as never);
+    const listed = await request(app).get("/admin/organizations?status=PENDING").set("Authorization", `Bearer ${adminToken}`);
+    expect(listed.status).toBe(200);
+    expect(listed.body[0]).toMatchObject({ linked_account: true, account_status: "ACTIVE" });
+    queryMock.mockResolvedValueOnce([{ user_id: "org", status: "VERIFIED" }] as never);
     const approved = await request(app).patch("/admin/organizations/org/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "VERIFIED" });
     expect(approved.status).toBe(200);
-    expect(auditMock).toHaveBeenCalled();
+    expect(queryMock.mock.calls[queryMock.mock.calls.length - 1]?.[1]).toContain("ORGANIZATION_VERIFIED");
   });
 
   it("requires a rejection reason and handles missing organizations", async () => {

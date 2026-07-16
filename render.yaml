@@ -1,0 +1,221 @@
+envVarGroups:
+  - name: charityconnect-shared-security
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: INTERNAL_SERVICE_TOKEN
+        generateValue: true
+      - key: NODE_ENV
+        value: production
+      - key: AUTO_MIGRATE_DB
+        value: "1"
+
+services:
+  - type: keyvalue
+    name: charityconnect-redis
+    region: singapore
+    plan: free
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+  - type: pserv
+    name: charityconnect-identity
+    region: singapore
+    plan: starter
+    runtime: docker
+    dockerfilePath: ./backend/identity/Dockerfile
+    dockerContext: ./backend/identity
+    envVars:
+      - fromGroup: charityconnect-shared-security
+      - key: PORT
+        value: "3001"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: charityconnect-identity-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: charityconnect-redis
+          property: connectionString
+      - key: CAMPAIGN_SERVICE_URL
+        fromService:
+          type: pserv
+          name: charityconnect-campaign
+          property: hostport
+      - key: PUBLIC_WEB_URL
+        value: https://charityconnect-7kep.onrender.com
+      - key: CORS_ORIGINS
+        value: https://charityconnect-7kep.onrender.com
+      - key: UPLOAD_DIR
+        value: /app/uploads
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_INITIAL_PASSWORD
+        sync: false
+      - key: ADMIN_NAME
+        value: Quản trị CharityConnect
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GMAIL_REFRESH_TOKEN
+        sync: false
+      - key: GMAIL_SENDER_EMAIL
+        sync: false
+    disk:
+      name: identity-uploads
+      mountPath: /app/uploads
+      sizeGB: 5
+
+  - type: pserv
+    name: charityconnect-campaign
+    region: singapore
+    plan: starter
+    runtime: docker
+    dockerfilePath: ./backend/campaign/Dockerfile
+    dockerContext: ./backend/campaign
+    envVars:
+      - fromGroup: charityconnect-shared-security
+      - key: PORT
+        value: "3002"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: charityconnect-campaign-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: charityconnect-redis
+          property: connectionString
+      - key: IDENTITY_SERVICE_URL
+        fromService:
+          type: pserv
+          name: charityconnect-identity
+          property: hostport
+      - key: CORS_ORIGINS
+        value: https://charityconnect-7kep.onrender.com
+      - key: UPLOAD_DIR
+        value: /app/uploads
+    disk:
+      name: campaign-uploads
+      mountPath: /app/uploads
+      sizeGB: 5
+
+  - type: pserv
+    name: charityconnect-donation
+    region: singapore
+    plan: starter
+    runtime: docker
+    dockerfilePath: ./backend/donation/Dockerfile
+    dockerContext: ./backend/donation
+    envVars:
+      - fromGroup: charityconnect-shared-security
+      - key: PORT
+        value: "8000"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: charityconnect-donation-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: charityconnect-redis
+          property: connectionString
+      - key: CAMPAIGN_SERVICE_URL
+        fromService:
+          type: pserv
+          name: charityconnect-campaign
+          property: hostport
+      - key: IDENTITY_SERVICE_URL
+        fromService:
+          type: pserv
+          name: charityconnect-identity
+          property: hostport
+      - key: RECONCILIATION_INTERVAL_SECONDS
+        value: "60"
+
+  - type: pserv
+    name: charityconnect-assistant
+    region: singapore
+    plan: starter
+    runtime: docker
+    dockerfilePath: ./backend/assistant/Dockerfile
+    dockerContext: ./backend/assistant
+    envVars:
+      - key: PORT
+        value: "8001"
+      - key: CAMPAIGN_SERVICE_URL
+        fromService:
+          type: pserv
+          name: charityconnect-campaign
+          property: hostport
+      - key: DONATION_SERVICE_URL
+        fromService:
+          type: pserv
+          name: charityconnect-donation
+          property: hostport
+      - key: CORS_ORIGINS
+        value: https://charityconnect-7kep.onrender.com
+      - key: ASSISTANT_PROVIDER
+        value: auto
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  - type: web
+    name: charityconnect-gateway
+    region: singapore
+    plan: free
+    runtime: docker
+    dockerfilePath: ./nginx/Dockerfile
+    dockerContext: ./nginx
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: PUBLIC_WEB_URL
+        value: https://charityconnect-7kep.onrender.com
+      - key: IDENTITY_HOSTPORT
+        fromService:
+          type: pserv
+          name: charityconnect-identity
+          property: hostport
+      - key: CAMPAIGN_HOSTPORT
+        fromService:
+          type: pserv
+          name: charityconnect-campaign
+          property: hostport
+      - key: DONATION_HOSTPORT
+        fromService:
+          type: pserv
+          name: charityconnect-donation
+          property: hostport
+      - key: ASSISTANT_HOSTPORT
+        fromService:
+          type: pserv
+          name: charityconnect-assistant
+          property: hostport
+
+databases:
+  - name: charityconnect-identity-db
+    region: singapore
+    plan: basic-256mb
+    databaseName: charityconnect_identity
+    user: charityconnect_identity
+    ipAllowList: []
+  - name: charityconnect-campaign-db
+    region: singapore
+    plan: basic-256mb
+    databaseName: charityconnect_campaign
+    user: charityconnect_campaign
+    ipAllowList: []
+  - name: charityconnect-donation-db
+    region: singapore
+    plan: basic-256mb
+    databaseName: charityconnect_donation
+    user: charityconnect_donation
+    ipAllowList: []

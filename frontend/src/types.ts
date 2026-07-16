@@ -37,6 +37,13 @@ export interface AccountUser extends User {
   is_online?: boolean;
   last_login_at?: string | null;
 }
+export interface ServiceSyncStatus {
+  service: "identity" | "campaign" | "donation";
+  as_of: string;
+  status: "READY" | "DEGRADED";
+  totals: Record<string, number>;
+  campaigns?: Array<{ campaign_id: string; amount: number; event_count: number }>;
+}
 export interface Campaign {
   id: string;
   organization_id: string;

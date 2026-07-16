@@ -4,7 +4,7 @@ import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { GoogleSignInButton } from "../components/GoogleSignInButton";
-import { api } from "../lib/api";
+import { api, isMockMode } from "../lib/api";
 import type { AuthPayload } from "../types";
 
 const quickAccounts = [
@@ -22,6 +22,8 @@ export function LoginPage(): JSX.Element {
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [googleRole, setGoogleRole] = useState<"DONOR" | "ORGANIZATION">("DONOR");
+  const [googleOrganizationName, setGoogleOrganizationName] = useState("");
   const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
   const finishLogin = (payload: AuthPayload) => { login(payload); navigate(dashboardFor(payload.user.role)); };
   const mutation = useMutation({
@@ -29,7 +31,15 @@ export function LoginPage(): JSX.Element {
     onSuccess: finishLogin,
   });
   const googleMutation = useMutation({
-    mutationFn: (credential: string) => api<AuthPayload>("/auth/google", { method: "POST", body: JSON.stringify({ credential, terms_accepted: true }) }),
+    mutationFn: (credential: string) => api<AuthPayload>("/auth/google", {
+      method: "POST",
+      body: JSON.stringify({
+        credential,
+        role: googleRole,
+        organization_name: googleRole === "ORGANIZATION" ? googleOrganizationName.trim() : undefined,
+        terms_accepted: true,
+      }),
+    }),
     onSuccess: finishLogin,
   });
 
@@ -51,7 +61,9 @@ export function LoginPage(): JSX.Element {
         <p className="text-sm font-bold uppercase tracking-[.16em] text-brand-500">Ba vai trò, một nền tảng</p>
         <h1 className="mt-4 text-4xl font-black tracking-[-0.04em]">Đăng nhập để tiếp tục hành trình.</h1>
         <p className="mt-4 leading-7 text-white/65">Mỗi vai trò chỉ thấy đúng công việc của mình. Chọn nhanh một vai trò để tự điền thông tin đăng nhập.</p>
-        <div className="mt-8 space-y-3">{quickAccounts.map(({ label, email: accountEmail, icon: Icon, note }) => <button type="button" className="flex w-full items-center gap-4 rounded-2xl border border-white/15 p-4 text-left transition hover:border-brand-500 hover:bg-white/5" onClick={() => chooseAccount(accountEmail)} key={accountEmail}><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-500 text-ink"><Icon size={20} /></span><span><strong className="block">{label}</strong><span className="mt-0.5 block text-xs text-white/55">{note}</span></span></button>)}</div>
+        <div className="mt-8 space-y-3">{quickAccounts.map(({ label, email: accountEmail, icon: Icon, note }) => isMockMode
+          ? <button type="button" className="flex w-full items-center gap-4 rounded-2xl border border-white/15 p-4 text-left transition hover:border-brand-500 hover:bg-white/5" onClick={() => chooseAccount(accountEmail)} key={accountEmail}><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-500 text-ink"><Icon size={20} /></span><span><strong className="block">{label}</strong><span className="mt-0.5 block text-xs text-white/55">{note}</span></span></button>
+          : <div className="flex w-full items-center gap-4 rounded-2xl border border-white/15 p-4" key={accountEmail}><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-brand-500 text-ink"><Icon size={20} /></span><span><strong className="block">{label}</strong><span className="mt-0.5 block text-xs text-white/55">{note}</span></span></div>)}</div>
       </section>
       <form className="p-8 sm:p-10" onSubmit={submit}>
         <h2 className="text-2xl font-black text-ink">Thông tin đăng nhập</h2>
@@ -60,7 +72,7 @@ export function LoginPage(): JSX.Element {
         <label className="mt-5 block"><span className="label">Mật khẩu</span><input className="input" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         {error && <p className="mt-4 rounded-xl bg-rose-50 p-3 text-sm font-semibold text-rose-700" role="alert">{error}</p>}
         <button className="btn-primary mt-7 w-full" disabled={mutation.isPending || googleMutation.isPending}>{mutation.isPending ? "Đang đăng nhập…" : "Đăng nhập"}</button>
-        {googleEnabled && <><div className="my-6 flex items-center gap-3 text-xs font-bold uppercase tracking-[.12em] text-slate-400"><span className="h-px flex-1 bg-slate-200" />hoặc<span className="h-px flex-1 bg-slate-200" /></div><GoogleSignInButton disabled={mutation.isPending || googleMutation.isPending} onCredential={(credential) => googleMutation.mutate(credential)} /><p className="mt-3 text-center text-xs leading-5 text-slate-500">Đăng nhập Google chỉ chia sẻ tên và email đã xác thực để tạo phiên CharityConnect.</p></>}
+        {googleEnabled && <><div className="my-6 flex items-center gap-3 text-xs font-bold uppercase tracking-[.12em] text-slate-400"><span className="h-px flex-1 bg-slate-200" />hoặc<span className="h-px flex-1 bg-slate-200" /></div><div className="mb-4 grid gap-3 sm:grid-cols-2"><label><span className="label">Loại tài khoản Google mới</span><select className="input" value={googleRole} onChange={(event) => setGoogleRole(event.target.value as "DONOR" | "ORGANIZATION")}><option value="DONOR">Người quyên góp</option><option value="ORGANIZATION">Tổ chức</option></select></label>{googleRole === "ORGANIZATION" && <label><span className="label">Tên tổ chức</span><input className="input" value={googleOrganizationName} minLength={2} required placeholder="Tên pháp lý hoặc tên hoạt động" onChange={(event) => setGoogleOrganizationName(event.target.value)} /></label>}</div><GoogleSignInButton disabled={mutation.isPending || googleMutation.isPending || (googleRole === "ORGANIZATION" && googleOrganizationName.trim().length < 2)} onCredential={(credential) => googleMutation.mutate(credential)} /><p className="mt-3 text-center text-xs leading-5 text-slate-500">Nếu email đã tồn tại, hệ thống liên kết đúng tài khoản hiện có. Google chỉ chia sẻ tên và email đã xác thực; không cung cấp mật khẩu cho CharityConnect.</p></>}
         <p className="mt-4 text-center text-sm"><Link className="font-bold text-brand-700" to="/quen-mat-khau">Quên mật khẩu?</Link></p>
         <p className="mt-6 text-center text-sm text-slate-600">Chưa có tài khoản? <Link className="font-bold text-brand-700" to="/dang-ky">Đăng ký</Link></p>
       </form>

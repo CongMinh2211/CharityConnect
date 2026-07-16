@@ -40,7 +40,5 @@ CREATE TABLE audit_logs (
 CREATE INDEX idx_org_status ON organization_profiles(status);
 CREATE INDEX idx_identity_audit_created_at ON audit_logs(created_at DESC);
 
-INSERT INTO users(email, password_hash, name, role)
-VALUES ('admin@charityconnect.vn', crypt('Admin@123', gen_salt('bf')), 'Quản trị CharityConnect', 'ADMIN')
-ON CONFLICT DO NOTHING;
-
+-- Admin production được bootstrap từ ADMIN_EMAIL/ADMIN_INITIAL_PASSWORD sau migration.
+-- Không lưu mật khẩu mặc định trong SQL hoặc Git.

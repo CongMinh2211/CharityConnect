@@ -41,13 +41,13 @@ function EmptyChart(): JSX.Element {
 export function StatisticsPage(): JSX.Element {
   const { user } = useAuth();
   const [period, setPeriod] = useState<AnalyticsPeriod>("30d");
-  const donations = useQuery({ queryKey: ["analytics-donations-public", period], queryFn: () => api<DonationAnalytics>(`/analytics/donations/public?period=${period}`) });
-  const campaigns = useQuery({ queryKey: ["analytics-campaigns-public", period], queryFn: () => api<CampaignAnalytics>(`/analytics/campaigns/public?period=${period}`) });
-  const users = useQuery({ queryKey: ["analytics-users-public"], queryFn: () => api<UserAnalytics>("/analytics/users/public") });
+  const donations = useQuery({ queryKey: ["analytics-donations-public", period], queryFn: () => api<DonationAnalytics>(`/analytics/donations/public?period=${period}`), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const campaigns = useQuery({ queryKey: ["analytics-campaigns-public", period], queryFn: () => api<CampaignAnalytics>(`/analytics/campaigns/public?period=${period}`), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const users = useQuery({ queryKey: ["analytics-users-public"], queryFn: () => api<UserAnalytics>("/analytics/users/public"), refetchInterval: 5_000, refetchOnWindowFocus: true });
   const roleDonationPath = user?.role === "DONOR" ? "me" : user?.role === "ORGANIZATION" ? "organization" : user?.role === "ADMIN" ? "admin" : null;
-  const roleDonations = useQuery({ queryKey: ["analytics-donations-role", roleDonationPath, period], queryFn: () => api<DonationAnalytics>(`/analytics/donations/${roleDonationPath}?period=${period}`), enabled: Boolean(roleDonationPath) });
-  const statement = useQuery({ queryKey: ["public-ledger-statement"], queryFn: () => api<{ items: LedgerEntry[] }>("/transparency/ledger?limit=12") });
-  const honor = useQuery({ queryKey: ["top-donors", period], queryFn: () => api<TopDonorsResponse>(`/analytics/donations/top-donors?period=${period}&limit=10`) });
+  const roleDonations = useQuery({ queryKey: ["analytics-donations-role", roleDonationPath, period], queryFn: () => api<DonationAnalytics>(`/analytics/donations/${roleDonationPath}?period=${period}`), enabled: Boolean(roleDonationPath), refetchInterval: roleDonationPath ? 5_000 : false, refetchOnWindowFocus: true });
+  const statement = useQuery({ queryKey: ["public-ledger-statement"], queryFn: () => api<{ items: LedgerEntry[] }>("/transparency/ledger?limit=12"), refetchInterval: 5_000, refetchOnWindowFocus: true });
+  const honor = useQuery({ queryKey: ["top-donors", period], queryFn: () => api<TopDonorsResponse>(`/analytics/donations/top-donors?period=${period}&limit=10`), refetchInterval: 5_000, refetchOnWindowFocus: true });
 
   const loading = donations.isLoading || campaigns.isLoading || users.isLoading;
   const failed = donations.isError || campaigns.isError || users.isError;

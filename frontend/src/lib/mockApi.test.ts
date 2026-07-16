@@ -303,6 +303,8 @@ describe("mock API demo flows", () => {
     expect(await mockApi<{ status: string }>("/organizations/me")).toMatchObject({ status: "PENDING" });
 
     actAs({ id: "admin-demo", name: "Admin", email: "admin@demo.vn", role: "ADMIN" });
+    const pendingQueue = await mockApi<Array<{ user_id: string; linked_account: boolean; account_status: string }>>("/admin/organizations?status=PENDING");
+    expect(pendingQueue).toContainEqual(expect.objectContaining({ user_id: "org-pending", linked_account: true, account_status: "ACTIVE" }));
     const detailBefore = await mockApi<{ status: string; has_document: boolean }>("/organizations/org-pending/verification");
     expect(detailBefore).toMatchObject({ status: "PENDING", has_document: true });
     await mockApi("/admin/organizations/org-pending/status", { method: "PATCH", body: JSON.stringify({ status: "VERIFIED" }) });
@@ -311,6 +313,16 @@ describe("mock API demo flows", () => {
     expect(detailAfter.verified_at).toBeTruthy();
     expect(detailAfter.expires_at).toBeTruthy();
     expect(detailAfter.history.length).toBeGreaterThan(1);
+    actAs({ id: "org-pending", name: "Nhip Cau Nho", email: "contact@nhipcaunho.vn", role: "ORGANIZATION" });
+    expect(await mockApi<{ status: string }>("/organizations/me")).toMatchObject({ status: "VERIFIED" });
+
+    actAs({ id: "admin-demo", name: "Admin", email: "admin@demo.vn", role: "ADMIN" });
+    const stateKey = "cc_demo_state_v11";
+    const orphanedState = JSON.parse(storage.getItem(stateKey)!) as { users: Array<{ id: string }> };
+    orphanedState.users = orphanedState.users.filter((item) => item.id !== "org-pending");
+    storage.setItem(stateKey, JSON.stringify(orphanedState));
+    const orphaned = await mockApi<Array<{ user_id: string; linked_account: boolean }>>("/admin/organizations");
+    expect(orphaned).toContainEqual(expect.objectContaining({ user_id: "org-pending", linked_account: false }));
   });
 
   it("rejects invalid donation amounts before changing financial data", async () => {

@@ -129,6 +129,20 @@ def test_admin_pending_list_enforces_role(client):
     assert len(result) == 1 and result[0]["amount"] == 80_000_000
 
 
+def test_admin_sync_status_compares_financial_events(client):
+    api, db, _http, _redis = client
+    main.app.dependency_overrides[require_user] = ADMIN
+    db.fetchrow_results.append({
+        "completed_donations": 2, "completed_amount": 750000, "pending_review": 1,
+        "pending_outbox": 0, "ledger_donation_entries": 2,
+    })
+    db.fetch_results.append([{"campaign_id": "campaign-1", "amount": 750000, "event_count": 2}])
+    response = api.get("/admin/sync/donation")
+    assert response.status_code == 200
+    assert response.json()["totals"]["completed_amount"] == 750000
+    assert response.json()["campaigns"][0]["event_count"] == 2
+
+
 def test_admin_approve_emits_completion(client):
     api, db, _http, _redis = client
     main.app.dependency_overrides[require_user] = ADMIN

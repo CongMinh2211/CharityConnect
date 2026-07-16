@@ -26,7 +26,14 @@ export function authenticate(req: AuthRequest, res: Response, next: NextFunction
   }
   try {
     req.user = jwt.verify(token, secret) as AuthClaims;
-    if (!req.user.session_id) { next(); return; }
+    if (!req.user.session_id) {
+      if (process.env.NODE_ENV === "production") {
+        res.status(401).json({ message: "Phiên đăng nhập không có định danh phiên hợp lệ" });
+        return;
+      }
+      next();
+      return;
+    }
     void query<{ id: string }>(
       `SELECT s.id FROM account_sessions s JOIN users u ON u.id=s.user_id
        WHERE s.id=$1 AND s.user_id=$2 AND s.revoked_at IS NULL AND s.expires_at>now() AND COALESCE(u.status::text,'ACTIVE')='ACTIVE'`,

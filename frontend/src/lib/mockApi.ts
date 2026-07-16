@@ -12,10 +12,16 @@ interface OrganizationProfile {
   status: "PENDING" | "VERIFIED" | "REJECTED";
   rejection_reason?: string | null;
   submitted_at?: string;
+  updated_at?: string;
   verified_at?: string | null;
   expires_at?: string | null;
   has_document?: boolean;
   history?: OrgStatusEvent[];
+  name?: string;
+  account_role?: Role;
+  account_status?: "ACTIVE" | "DISABLED";
+  linked_account?: boolean;
+  active_session_count?: number;
 }
 
 interface CampaignReport {
@@ -1645,6 +1651,45 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const user = requireRole();
     return state.auditLogs.filter((item) => item.actor_id === user.id || item.entity_id === user.id).slice(0, 50) as T;
   }
+  if (pathname === "/admin/sync/identity" && method === "GET") {
+    requireRole("ADMIN");
+    return { service: "identity", as_of: new Date().toISOString(), status: "READY", totals: {
+      users_total: state.users.length,
+      google_accounts: state.users.filter((item) => Boolean(item.google_subject)).length,
+      disabled_accounts: state.users.filter((item) => item.status === "DISABLED").length,
+      active_sessions: state.sessions.filter((item) => !item.revoked_at).length,
+      pending_email_outbox: 0,
+      failed_email_outbox: 0,
+      processed_notification_events: state.emailNotifications.filter((item) => item.template === "DONATION_THANK_YOU").length,
+      organization_accounts: state.users.filter((item) => item.role === "ORGANIZATION").length,
+      organization_profiles: state.organizations.length,
+      pending_organizations: state.organizations.filter((item) => item.status === "PENDING").length,
+      verified_organizations: state.organizations.filter((item) => item.status === "VERIFIED" && (!item.expires_at || new Date(item.expires_at).getTime() > Date.now())).length,
+    } } as T;
+  }
+  if (pathname === "/admin/sync/campaign" && method === "GET") {
+    requireRole("ADMIN");
+    const completed = state.donations.filter((item) => item.status === "COMPLETED");
+    return { service: "campaign", as_of: new Date().toISOString(), status: "READY", totals: {
+      campaigns_total: state.campaigns.filter((item) => !item.deleted_at).length,
+      processed_donation_events: completed.length,
+      processed_amount: completed.reduce((sum, item) => sum + item.amount, 0),
+      raised_amount: state.campaigns.reduce((sum, item) => sum + item.raised_amount, 0),
+      pending_outbox: 0,
+      linked_organizations: new Set(state.campaigns.filter((item) => !item.deleted_at).map((item) => item.organization_id)).size,
+    } } as T;
+  }
+  if (pathname === "/admin/sync/donation" && method === "GET") {
+    requireRole("ADMIN");
+    const completed = state.donations.filter((item) => item.status === "COMPLETED");
+    return { service: "donation", as_of: new Date().toISOString(), status: "READY", totals: {
+      completed_donations: completed.length,
+      completed_amount: completed.reduce((sum, item) => sum + item.amount, 0),
+      pending_review: state.donations.filter((item) => item.status === "PENDING_REVIEW").length,
+      pending_outbox: 0,
+      ledger_donation_entries: state.ledger.filter((item) => item.event_type === "DONATION_COMPLETED").length,
+    } } as T;
+  }
   if (pathname === "/admin/users" && method === "GET") {
     requireRole("ADMIN");
     const role = url.searchParams.get("role");
@@ -1796,7 +1841,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const existing = state.organizations.find((item) => item.user_id === user.id);
     const submittedAt = new Date().toISOString();
     const submitEvent: OrgStatusEvent = { action: "ORGANIZATION_SUBMITTED", at: submittedAt, reason: null };
-    const application: OrganizationProfile = { user_id: user.id, email: user.email, legal_name: String(body.legalName), registration_number: String(body.registrationNumber), description: String(body.description ?? ""), status: "PENDING", submitted_at: submittedAt, has_document: true, verified_at: null, expires_at: null, history: [...(existing?.history ?? []), submitEvent] };
+    const application: OrganizationProfile = { user_id: user.id, email: user.email, name: user.name, legal_name: String(body.legalName), registration_number: String(body.registrationNumber), description: String(body.description ?? ""), status: "PENDING", submitted_at: submittedAt, updated_at: submittedAt, has_document: true, verified_at: null, expires_at: null, account_role: "ORGANIZATION", account_status: user.status ?? "ACTIVE", linked_account: true, active_session_count: state.sessions.filter((item) => item.id.startsWith(`${user.id}:`) && !item.revoked_at).length, history: [...(existing?.history ?? []), submitEvent] };
     if (existing) Object.assign(existing, application); else state.organizations.push(application);
     saveState(state); return application as T;
   }
@@ -1815,7 +1860,18 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (pathname === "/admin/organizations" && method === "GET") {
     requireRole("ADMIN");
     const status = url.searchParams.get("status");
-    return state.organizations.filter((item) => !status || item.status === status) as T;
+    return state.organizations.filter((item) => !status || item.status === status).map((item) => {
+      const account = state.users.find((user) => user.id === item.user_id);
+      return {
+        ...item,
+        email: account?.email ?? item.email,
+        name: account?.name ?? item.name,
+        account_role: account?.role,
+        account_status: account?.status ?? "ACTIVE",
+        linked_account: Boolean(account),
+        active_session_count: state.sessions.filter((session) => session.id.startsWith(`${item.user_id}:`) && !session.revoked_at).length,
+      };
+    }) as T;
   }
   const organizationStatus = pathname.match(/^\/admin\/organizations\/([^/]+)\/status$/);
   if (organizationStatus && method === "PATCH") {
@@ -1827,6 +1883,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     item.rejection_reason = body.reason ? String(body.reason) : null;
     item.verified_at = item.status === "VERIFIED" ? now : null;
     item.expires_at = item.status === "VERIFIED" ? new Date(Date.now() + 86_400_000 * 365).toISOString() : null;
+    item.updated_at = now;
     item.history = [...(item.history ?? []), { action: `ORGANIZATION_${item.status}`, at: now, reason: item.rejection_reason }];
     saveState(state); return item as T;
   }

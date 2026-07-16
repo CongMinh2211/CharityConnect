@@ -330,7 +330,15 @@ app.post("/auth/logout", async (req, res, next) => {
 
 app.get("/profile", authenticate, async (req: AuthRequest, res, next) => {
   try {
-    const rows = await query("SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,created_at FROM users WHERE id=$1", [req.user!.sub]);
+    const rows = await query(
+      `SELECT id,email,name,role,phone,province,address,date_of_birth,organization_name,created_at,
+              (google_subject IS NOT NULL) AS google_connected,
+              (password_hash IS NOT NULL) AS has_local_password,
+              CASE WHEN google_subject IS NOT NULL AND password_hash IS NOT NULL THEN 'GOOGLE_AND_PASSWORD'
+                   WHEN google_subject IS NOT NULL THEN 'GOOGLE' ELSE 'PASSWORD' END AS auth_provider
+       FROM users WHERE id=$1`,
+      [req.user!.sub],
+    );
     res.json(rows[0]);
   } catch (error) { next(error); }
 });
@@ -442,8 +450,8 @@ app.post("/organizations/application", authenticate, authorize("ORGANIZATION"), 
       `INSERT INTO organization_profiles(user_id,legal_name,registration_number,description,document_path,status,rejection_reason,submitted_at)
        VALUES ($1,$2,$3,$4,$5,'PENDING',NULL,now())
        ON CONFLICT (user_id) DO UPDATE SET legal_name=EXCLUDED.legal_name, registration_number=EXCLUDED.registration_number,
-         description=EXCLUDED.description, document_path=COALESCE(EXCLUDED.document_path,organization_profiles.document_path),
-         status='PENDING', rejection_reason=NULL, submitted_at=now()
+          description=EXCLUDED.description, document_path=COALESCE(EXCLUDED.document_path,organization_profiles.document_path),
+          status='PENDING', rejection_reason=NULL, submitted_at=now(), verification_expires_at=NULL
        RETURNING user_id,status`,
       [req.user!.sub, input.legalName, input.registrationNumber, input.description, req.file?.path ?? null]
     );
@@ -456,6 +464,40 @@ app.get("/organizations/me", authenticate, authorize("ORGANIZATION"), async (req
   try {
     const rows = await query("SELECT * FROM organization_profiles WHERE user_id=$1", [req.user!.sub]);
     res.json(rows[0] ?? null);
+  } catch (error) { next(error); }
+});
+
+app.get("/organizations/:id/verification", async (req, res, next) => {
+  try {
+    const org = (await query<{
+      user_id: string; legal_name: string; registration_number: string; description: string;
+      status: OrganizationStatus; submitted_at: string; reviewed_at: string | null;
+      verification_expires_at: string | null; document_path: string | null;
+    }>(
+      `SELECT user_id,legal_name,registration_number,description,status,submitted_at,reviewed_at,verification_expires_at,document_path
+       FROM organization_profiles WHERE user_id=$1`, [req.params.id]
+    ))[0];
+    if (!org) { res.status(404).json({ message: "Không tìm thấy tổ chức" }); return; }
+    const history = await query<{ action: string; created_at: string; reason: string | null }>(
+      `SELECT action,created_at,new_value->>'rejection_reason' AS reason
+       FROM audit_logs WHERE entity_type='ORGANIZATION' AND entity_id=$1 AND action LIKE 'ORGANIZATION_%'
+       ORDER BY created_at`, [req.params.id]
+    );
+    res.json({
+      id: org.user_id,
+      legal_name: org.legal_name,
+      registration_number: org.registration_number,
+      description: org.description,
+      status: org.status,
+      submitted_at: org.submitted_at,
+      verified_at: org.status === "VERIFIED" ? org.reviewed_at : null,
+      expires_at: org.status === "VERIFIED" ? org.verification_expires_at : null,
+      verification_valid: org.status === "VERIFIED"
+        && Boolean(org.verification_expires_at)
+        && new Date(org.verification_expires_at!).getTime() > Date.now(),
+      has_document: Boolean(org.document_path),
+      history: history.map((row) => ({ action: row.action, at: row.created_at, reason: row.reason })),
+    });
   } catch (error) { next(error); }
 });
 
@@ -481,7 +523,8 @@ app.patch("/admin/organizations/:id/status", authenticate, authorize("ADMIN"), a
     const before = (await query<{ status: OrganizationStatus }>("SELECT status FROM organization_profiles WHERE user_id=$1", [organizationId]))[0];
     if (!before) { res.status(404).json({ message: "Không tìm thấy tổ chức" }); return; }
     const rows = await query(
-      `UPDATE organization_profiles SET status=$1,rejection_reason=$2,reviewed_at=now(),reviewed_by=$3
+      `UPDATE organization_profiles SET status=$1,rejection_reason=$2,reviewed_at=now(),reviewed_by=$3,
+         verification_expires_at=CASE WHEN $1='VERIFIED' THEN now()+interval '1 year' ELSE NULL END
        WHERE user_id=$4 RETURNING *`, [input.status, input.reason ?? null, req.user!.sub, organizationId]
     );
     await audit(req.user!.sub, `ORGANIZATION_${input.status}`, "ORGANIZATION", organizationId, before, rows[0]);
@@ -491,7 +534,14 @@ app.patch("/admin/organizations/:id/status", authenticate, authorize("ADMIN"), a
 
 app.get("/internal/organizations/:userId/status", internalOnly, async (req, res, next) => {
   try {
-    const rows = await query("SELECT status,legal_name FROM organization_profiles WHERE user_id=$1", [req.params.userId]);
+    const rows = await query(
+      `SELECT CASE
+         WHEN status='VERIFIED' AND (verification_expires_at IS NULL OR verification_expires_at<=now()) THEN 'EXPIRED'
+         ELSE status::text
+       END AS status,legal_name,verification_expires_at
+       FROM organization_profiles WHERE user_id=$1`,
+      [req.params.userId]
+    );
     res.json(rows[0] ?? { status: null });
   } catch (error) { next(error); }
 });

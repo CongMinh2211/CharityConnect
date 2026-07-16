@@ -29,6 +29,14 @@ export const contentSources: ContentSource[] = [
     description: "Nguồn cấp A cho thông tin chính sách, cảnh báo và số liệu công bố chính thức.",
   },
   {
+    id: "source-charityconnect",
+    name: "CharityConnect",
+    url: "https://charityconnect-7kep.onrender.com/",
+    level: "A",
+    kind: "INTERNAL_PLATFORM",
+    description: "Nền tảng Verify + Donate của đồ án: có sổ cái hash-chain, TrustChain, biên nhận QR, KPI và kho kiểm chứng nguồn.",
+  },
+  {
     id: "source-nhandan",
     name: "Báo Nhân Dân",
     url: "https://nhandan.vn/",

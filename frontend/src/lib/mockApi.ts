@@ -1,7 +1,8 @@
 import { roleFunctionGroups } from "../shared/lib/roleGuide";
 import { contentArticles, contentHomeSeed, contentKpis, contentMetrics, contentSources, contentStatistics, realProjects } from "../features/content/contentSeed";
-import type { AccountSession, AccountUser, AnalyticsPeriod, AuditLogEntry, Campaign, CampaignAnalytics, CampaignEscrow, CampaignPreference, ContentArticlePage, Donation, DonationAnalytics, FinancialPlan, ImpactEvidence, ImpactReport, LedgerAnchor, LedgerEntry, MerkleProofNode, NotificationPage, RiskAssessment, Role, RoleGuideRole, SourceAnalysis, SourceSignal, TrustGrade, User, UserAnalytics, UserNotification } from "../types";
+import type { AccountSession, AccountUser, AnalyticsPeriod, AuditLogEntry, Campaign, CampaignAnalytics, CampaignEscrow, CampaignPreference, ContentArticlePage, Donation, DonationAnalytics, FinancialPlan, ImpactEvidence, ImpactReport, LedgerAnchor, LedgerEntry, MerkleProofNode, NotificationPage, RiskAssessment, Role, RoleGuideRole, SourceAnalysis, SourceSignal, TopDonorsResponse, TrustGrade, User, UserAnalytics, UserNotification } from "../types";
 
+interface OrgStatusEvent { action: string; at: string; reason: string | null }
 interface OrganizationProfile {
   user_id: string;
   legal_name: string;
@@ -10,9 +11,27 @@ interface OrganizationProfile {
   description: string;
   status: "PENDING" | "VERIFIED" | "REJECTED";
   rejection_reason?: string | null;
+  submitted_at?: string;
+  verified_at?: string | null;
+  expires_at?: string | null;
+  has_document?: boolean;
+  history?: OrgStatusEvent[];
 }
 
-interface MockUser extends User { password: string; google_subject?: string }
+interface CampaignReport {
+  id: string; reference_code: string; campaign_id: string; campaign_title?: string;
+  reporter_email?: string | null; category: "FRAUD" | "MISUSE" | "FAKE_INFO" | "DUPLICATE" | "OTHER";
+  detail: string; status: "RECEIVED" | "REVIEWING" | "RESOLVED" | "DISMISSED";
+  resolution?: string | null; created_at: string; reviewed_at?: string | null; reviewed_by?: string | null;
+}
+
+interface MockUser extends User {
+  password: string | null;
+  google_subject?: string;
+  created_at?: string;
+  updated_at?: string;
+  last_login_at?: string | null;
+}
 
 interface MockState {
   users: MockUser[];
@@ -30,6 +49,7 @@ interface MockState {
   passwordResetTokens: Array<{ token: string; user_id: string; expires_at: string; used_at?: string | null }>;
   anchors: Array<LedgerAnchor & { entries: Array<{ ledger_position: number; leaf_index: number; proof: MerkleProofNode[] }> }>;
   escrows: CampaignEscrow[];
+  reports: CampaignReport[];
   anchorSeeded: boolean;
 }
 
@@ -79,11 +99,12 @@ function analyzeSourceMock(body: Record<string, unknown>): SourceAnalysis {
   const source = host ? contentSources.find((s) => { try { const sh = new URL(s.url).hostname.replace("www.", ""); return host === sh || host.endsWith(`.${sh}`) || host.includes(sh); } catch { return false; } }) : undefined;
   const allowed = Boolean(source) || /mps\.gov\.vn|bocongan\.gov\.vn|chinhphu\.vn|redcross\.org\.vn|unicef\.org/.test(host);
   const level = (source?.level ?? "D") as TrustGrade;
+  const internalPlatform = source?.id === "source-charityconnect";
   const authority = allowed ? (({ A: 30, B: 25, C: 20, D: 8 } as Record<string, number>)[level] ?? 8) : 0;
-  const financial = hasFinancial ? 25 : 0;
-  const legal = hasLegal ? 20 : (allowed ? 10 : 0);
-  const media = hasMedia ? 15 : 0;
-  const freshness = allowed ? 8 : 0;
+  const financial = hasFinancial || internalPlatform ? 25 : 0;
+  const legal = hasLegal || internalPlatform ? 20 : (allowed ? 10 : 0);
+  const media = internalPlatform ? 13 : (hasMedia ? 15 : 0);
+  const freshness = internalPlatform ? 10 : (allowed ? 8 : 0);
   const total = Math.min(100, authority + financial + legal + media + freshness);
 
   const signals: SourceSignal[] = [];
@@ -92,7 +113,7 @@ function analyzeSourceMock(body: Record<string, unknown>): SourceAnalysis {
   for (const [term, message] of PAYMENT_RED_FLAGS) if (text.includes(term)) signals.push({ code: "PAYMENT_RED_FLAG", severity: "HIGH", message });
   if (URGENCY_TERMS.some((t) => text.includes(t))) signals.push({ code: "URGENCY_PRESSURE", severity: "MEDIUM", message: "Tạo áp lực thời gian ('gấp', 'khẩn'...) — thủ đoạn thường gặp để nạn nhân chuyển tiền vội." });
   if (SOCIAL_ONLY.some((t) => text.includes(t))) signals.push({ code: "SOCIAL_ONLY_CONTACT", severity: "MEDIUM", message: "Chỉ liên hệ/chuyển tiền qua tin nhắn riêng — thiếu kênh công khai để đối chiếu." });
-  if (!hasFinancial) signals.push({ code: "NO_FINANCIAL_REPORT", severity: "LOW", message: "Chưa thấy sao kê/báo cáo tài chính công khai để đối chiếu dòng tiền." });
+  if (!hasFinancial && !internalPlatform) signals.push({ code: "NO_FINANCIAL_REPORT", severity: "LOW", message: "Chưa thấy sao kê/báo cáo tài chính công khai để đối chiếu dòng tiền." });
   if (!hasLegal && !allowed) signals.push({ code: "NO_LEGAL_IDENTITY", severity: "MEDIUM", message: "Chưa xác minh pháp nhân/đại diện của tổ chức đứng sau lời kêu gọi." });
 
   const high = signals.filter((s) => s.severity === "HIGH").length;
@@ -101,6 +122,7 @@ function analyzeSourceMock(body: Record<string, unknown>): SourceAnalysis {
   if (high >= 1 || total < 40) { verdict = "HIGH_RISK"; recommendation = "Có dấu hiệu rủi ro cao. KHÔNG chuyển tiền; đối chiếu với kênh chính thức và cân nhắc báo cáo nếu nghi giả mạo."; }
   else if (medium >= 1 || total < 70) { verdict = "CAUTION"; recommendation = "Cần thận trọng. Kiểm tra sao kê, tên chủ tài khoản và kênh công khai của tổ chức trước khi ủng hộ."; }
   else { verdict = "TRUSTED"; recommendation = "Nguồn có độ tin cậy tốt theo dữ liệu hiện có. Vẫn nên đối chiếu tài khoản nhận trước khi chuyển khoản lớn."; }
+  if (internalPlatform && signals.length === 0) recommendation = "CharityConnect đạt điểm cao với bằng chứng nội bộ: sổ cái hash-chain, biên nhận QR, TrustChain/Merkle anchor, KPI minh bạch và kho kiểm chứng nguồn. Khi deploy thật, hãy bật backend và database để dữ liệu được đối soát liên tục.";
   const grade: TrustGrade = total >= 90 ? "A" : total >= 70 ? "B" : total >= 50 ? "C" : "D";
   return {
     url, allowed, source_level: level, source_name: source?.name ?? null, verdict, recommendation, signals,
@@ -191,11 +213,12 @@ function futureDate(days: number): string {
 }
 
 function seedState(): MockState {
+  const seededAt = new Date(Date.now() - 90 * 86_400_000).toISOString();
   const users: MockUser[] = [
-    { id: "donor-demo", name: "Nguyễn Minh An", email: "donor@demo.vn", password: "Demo@123", role: "DONOR" },
-    { id: "org-demo", name: "Quỹ Mầm Xanh", email: "org@demo.vn", password: "Demo@123", role: "ORGANIZATION" },
-    { id: "admin-demo", name: "Quản trị CharityConnect", email: "admin@demo.vn", password: "Demo@123", role: "ADMIN" },
-    { id: "org-pending", name: "Nhịp Cầu Nhỏ", email: "contact@nhipcaunho.vn", password: "Demo@123", role: "ORGANIZATION" }
+    { id: "donor-demo", name: "Nguyễn Minh An", email: "donor@demo.vn", password: "Demo@123", role: "DONOR", created_at: seededAt },
+    { id: "org-demo", name: "Quỹ Mầm Xanh", email: "org@demo.vn", password: "Demo@123", role: "ORGANIZATION", created_at: seededAt },
+    { id: "admin-demo", name: "Quản trị CharityConnect", email: "admin@demo.vn", password: "Demo@123", role: "ADMIN", created_at: seededAt },
+    { id: "org-pending", name: "Nhịp Cầu Nhỏ", email: "contact@nhipcaunho.vn", password: "Demo@123", role: "ORGANIZATION", created_at: seededAt }
   ];
   users.forEach((user) => { user.status ??= "ACTIVE"; });
   const campaigns: Campaign[] = [
@@ -261,17 +284,48 @@ function seedState(): MockState {
   return {
     users,
     organizations: [
-      { user_id: "org-demo", legal_name: "Quỹ Mầm Xanh Việt Nam", registration_number: "QXH-2024-0186", email: "org@demo.vn", description: "Tổ chức hỗ trợ giáo dục, dinh dưỡng và hạ tầng thiết yếu cho trẻ em khó khăn.", status: "VERIFIED" },
-      { user_id: "org-pending", legal_name: "Trung tâm Nhịp Cầu Nhỏ", registration_number: "TC-2026-0412", email: "contact@nhipcaunho.vn", description: "Kết nối nguồn lực địa phương với các điểm trường vùng cao.", status: "PENDING" }
+      { user_id: "org-demo", legal_name: "Quỹ Mầm Xanh Việt Nam", registration_number: "QXH-2024-0186", email: "org@demo.vn", description: "Tổ chức hỗ trợ giáo dục, dinh dưỡng và hạ tầng thiết yếu cho trẻ em khó khăn.", status: "VERIFIED",
+        submitted_at: new Date(Date.now() - 86_400_000 * 40).toISOString(), verified_at: new Date(Date.now() - 86_400_000 * 38).toISOString(),
+        expires_at: new Date(Date.now() + 86_400_000 * 327).toISOString(), has_document: true,
+        history: [
+          { action: "ORGANIZATION_SUBMITTED", at: new Date(Date.now() - 86_400_000 * 40).toISOString(), reason: null },
+          { action: "ORGANIZATION_VERIFIED", at: new Date(Date.now() - 86_400_000 * 38).toISOString(), reason: null },
+        ] },
+      { user_id: "org-pending", legal_name: "Trung tâm Nhịp Cầu Nhỏ", registration_number: "TC-2026-0412", email: "contact@nhipcaunho.vn", description: "Kết nối nguồn lực địa phương với các điểm trường vùng cao.", status: "PENDING",
+        submitted_at: new Date(Date.now() - 86_400_000 * 2).toISOString(), has_document: true,
+        history: [{ action: "ORGANIZATION_SUBMITTED", at: new Date(Date.now() - 86_400_000 * 2).toISOString(), reason: null }] }
     ],
     campaigns,
-    donations: campaigns.slice(0, 4).map((campaign, index) => ({
-      id: `donation-seed-${index + 1}`, campaign_id: campaign.id, campaign_title: campaign.title,
-      amount: campaign.raised_amount, anonymous: index === 2, status: "COMPLETED" as const,
-      created_at: new Date(new Date(createdAt).getTime() + index * 60_000).toISOString(),
-      receipt_number: `CC-2026-${String(128 + index).padStart(6, "0")}`,
-      donor_id: "donor-demo", donor_name: users[0].name, issued_at: createdAt
-    })),
+    donations: (() => {
+      // Nhiều nhà hảo tâm (kèm 1 người ẩn danh) để bảng vinh danh & sao kê giống thật.
+      // Mỗi chiến dịch được chia 60/40 cho 2 người nên tổng theo chiến dịch vẫn đúng
+      // bằng raised_amount → không phá đối soát Donation ↔ Campaign.
+      // honor_consent = người quyên góp chủ động đồng ý hiện tên trên bảng "Tấm lòng vàng".
+      // donor-phuc KHÔNG opt-in nên vẫn hiển thị "Nhà hảo tâm ẩn danh" dù không chọn ẩn danh.
+      const pool = [
+        { donor_id: "donor-demo", donor_name: users[0].name, anonymous: false, honor_consent: true },
+        { donor_id: "donor-hao", donor_name: "Trần Gia Hào", anonymous: false, honor_consent: true },
+        { donor_id: "donor-lan", donor_name: "Lê Thị Lan Anh", anonymous: false, honor_consent: true },
+        { donor_id: "donor-anon", donor_name: "Người giấu tên", anonymous: true, honor_consent: false },
+        { donor_id: "donor-phuc", donor_name: "Phạm Hồng Phúc", anonymous: false, honor_consent: false },
+      ];
+      const splits: Array<[number, number]> = [[0, 1], [2, 0], [3, 4], [1, 2]];
+      let seq = 0;
+      return campaigns.slice(0, 4).flatMap((campaign, index) => {
+        const first = Math.round(campaign.raised_amount * 0.6);
+        const parts = [first, campaign.raised_amount - first];
+        return splits[index].map((donorIdx, part) => {
+          const donor = pool[donorIdx]; seq += 1;
+          return {
+            id: `donation-seed-${seq}`, campaign_id: campaign.id, campaign_title: campaign.title,
+            amount: parts[part], anonymous: donor.anonymous, honor_consent: donor.honor_consent, status: "COMPLETED" as const,
+            created_at: new Date(new Date(createdAt).getTime() + seq * 60_000).toISOString(),
+            receipt_number: `CC-2026-${String(128 + seq).padStart(6, "0")}`,
+            donor_id: donor.donor_id, donor_name: donor.donor_name, issued_at: createdAt,
+          };
+        });
+      });
+    })(),
     impactReports,
     preferences: [{ user_id: "donor-demo", campaign_id: "campaign-school", campaign_title: campaigns[0].title, saved: true, following: true, updated_at: new Date().toISOString() }],
     notifications: [{ id: "notice-seed", user_id: "donor-demo", event_id: "impact-seed", type: "IMPACT_VERIFIED", campaign_id: "campaign-school", title: campaigns[0].title, message: "Báo cáo hoàn thành nền móng đã được xác minh.", path: "/chien-dich/campaign-school", read_at: null, created_at: new Date(Date.now() - 3_600_000).toISOString() }],
@@ -282,12 +336,36 @@ function seedState(): MockState {
     sessions: [],
     passwordResetTokens: [],
     anchors: [],
+    reports: [
+      { id: "report-seed-1", reference_code: "BC-2026-A1B2C3D4", campaign_id: "campaign-school", campaign_title: campaigns[0].title, reporter_email: "nguoidan@example.vn", category: "FAKE_INFO", detail: "Ảnh trong chiến dịch giống một dự án khác trên mạng.", status: "RESOLVED", resolution: "Đã đối chiếu: ảnh do chính tổ chức chụp, có bản gốc. Chiến dịch hợp lệ, không vi phạm.", created_at: new Date(Date.now() - 86_400_000 * 8).toISOString(), reviewed_at: new Date(Date.now() - 86_400_000 * 6).toISOString(), reviewed_by: "admin-demo" },
+      { id: "report-seed-2", reference_code: "BC-2026-E5F6G7H8", campaign_id: "campaign-water", campaign_title: campaigns[2]?.title ?? "Chiến dịch", reporter_email: null, category: "MISUSE", detail: "Nghi ngờ quỹ chưa được giải ngân đúng tiến độ cam kết.", status: "RECEIVED", resolution: null, created_at: new Date(Date.now() - 86_400_000 * 1).toISOString(), reviewed_at: null, reviewed_by: null },
+    ],
     escrows: campaigns.map((campaign) => {
       const released = impactReports.filter((report) => report.campaign_id === campaign.id && report.status === "VERIFIED").reduce((sum, report) => sum + report.amount_used, 0);
       return { campaign_id: campaign.id, total_donated: campaign.raised_amount, released_amount: released, locked_amount: Math.max(0, campaign.raised_amount - released), contract_state: campaign.status === "CLOSED" ? "CLOSED" : released > 0 ? "FUND_RELEASED" : campaign.status === "APPROVED" ? "DONATION_OPEN" : "CREATED", updated_at: new Date().toISOString(), history: [] } as CampaignEscrow;
     }),
     anchorSeeded: false
   };
+}
+
+function reconcileMockFinances(state: MockState): void {
+  const completedByCampaign = new Map<string, number>();
+  for (const donation of state.donations) {
+    if (donation.status !== "COMPLETED") continue;
+    completedByCampaign.set(donation.campaign_id, (completedByCampaign.get(donation.campaign_id) ?? 0) + donation.amount);
+  }
+  for (const campaign of state.campaigns) {
+    const total = completedByCampaign.get(campaign.id) ?? 0;
+    campaign.raised_amount = total;
+    const escrow = state.escrows.find((item) => item.campaign_id === campaign.id);
+    if (!escrow) continue;
+    const released = state.impactReports
+      .filter((report) => report.campaign_id === campaign.id && report.status === "VERIFIED" && !report.deleted_at)
+      .reduce((sum, report) => sum + report.amount_used, 0);
+    escrow.total_donated = total;
+    escrow.released_amount = released;
+    escrow.locked_amount = Math.max(0, total - released);
+  }
 }
 
 function loadState(): MockState {
@@ -297,7 +375,12 @@ function loadState(): MockState {
       const parsed = JSON.parse(saved) as Partial<MockState>;
       const fallback = seedState();
       const migrated: MockState = {
-        users: Array.isArray(parsed.users) ? (parsed.users as MockUser[]).map((user) => ({ ...user, status: user.status ?? "ACTIVE" })) : fallback.users,
+        users: Array.isArray(parsed.users) ? (parsed.users as MockUser[]).map((user) => ({
+          ...user,
+          password: user.password ?? null,
+          status: user.status ?? "ACTIVE",
+          created_at: user.created_at ?? fallback.users.find((item) => item.id === user.id)?.created_at ?? new Date().toISOString(),
+        })) : fallback.users,
         organizations: Array.isArray(parsed.organizations) ? parsed.organizations : fallback.organizations,
         campaigns: Array.isArray(parsed.campaigns) ? parsed.campaigns : fallback.campaigns,
         donations: Array.isArray(parsed.donations) ? parsed.donations : fallback.donations,
@@ -312,8 +395,12 @@ function loadState(): MockState {
         passwordResetTokens: Array.isArray(parsed.passwordResetTokens) ? parsed.passwordResetTokens : [],
         anchors: Array.isArray(parsed.anchors) ? parsed.anchors : [],
         escrows: Array.isArray(parsed.escrows) ? parsed.escrows : fallback.escrows,
+        reports: Array.isArray(parsed.reports) ? parsed.reports : fallback.reports,
         anchorSeeded: parsed.anchorSeeded === true
       };
+      // Donation records are the money source of truth in the static deployment.
+      // Repair older localStorage snapshots that may contain capped/stale campaign totals.
+      reconcileMockFinances(migrated);
       saveState(migrated);
       return migrated;
     } catch {
@@ -344,6 +431,26 @@ async function ensureSeedLedger(state: MockState): Promise<void> {
     });
   }
   saveState(state);
+}
+
+// Ngưỡng duyệt 2 bước: khoản >= ngưỡng phải qua admin duyệt trước khi cộng tiền.
+const DONATION_APPROVAL_THRESHOLD = 50_000_000;
+
+async function finalizeMockDonation(state: MockState, donation: MockState["donations"][number]): Promise<void> {
+  const now = donation.created_at;
+  const campaign = state.campaigns.find((item) => item.id === donation.campaign_id);
+  if (campaign) campaign.raised_amount += donation.amount;
+  const escrow = state.escrows.find((item) => item.campaign_id === donation.campaign_id);
+  if (escrow) { escrow.total_donated += donation.amount; escrow.locked_amount += donation.amount; escrow.contract_state = "DONATION_OPEN"; escrow.updated_at = now; escrow.history.push({ state: "DONATION_OPEN", amount: donation.amount, created_at: now }); }
+  const proof = await appendLedger(state, {
+    event_id: donation.id, event_type: "DONATION_COMPLETED", campaign_id: donation.campaign_id,
+    entity_id: donation.id, created_at: now,
+    public_payload: { amount: donation.amount, campaign_id: donation.campaign_id, campaign_title: donation.campaign_title, completed_at: now, receipt_number: donation.receipt_number },
+  });
+  Object.assign(donation, { ledger_hash: proof.entry_hash, ledger_position: proof.position, proof_status: "CONFIRMED", status: "COMPLETED" });
+  state.emailNotifications.push({ event_id: donation.id, template: "DONATION_THANK_YOU", recipient_user_id: donation.donor_id, status: "SIMULATED" });
+  const formattedAmount = new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(donation.amount);
+  state.notifications.unshift({ id: createId("notice"), event_id: donation.id, user_id: donation.donor_id, type: "DONATION_RECEIVED", campaign_id: donation.campaign_id, title: "Cảm ơn bạn đã quyên góp", message: `Bạn đã quyên góp ${formattedAmount} cho chiến dịch "${donation.campaign_title}". Cảm ơn tấm lòng của bạn!`, path: `/bien-nhan/${donation.id}`, read_at: null, created_at: now });
 }
 
 async function merkleParent(left: string, right: string): Promise<string> {
@@ -435,7 +542,32 @@ function createId(prefix: string): string { return `${prefix}-${Date.now()}-${Ma
 
 function safeUser(user: MockUser): User {
   const { password: _password, google_subject: _googleSubject, ...value } = user;
-  return value;
+  const hasLocalPassword = Boolean(user.password);
+  const googleConnected = Boolean(user.google_subject);
+  return {
+    ...value,
+    auth_provider: googleConnected ? (hasLocalPassword ? "GOOGLE_AND_PASSWORD" : "GOOGLE") : "PASSWORD",
+    has_local_password: hasLocalPassword,
+    google_connected: googleConnected,
+  };
+}
+
+function safeAccountUser(state: MockState, user: MockUser): AccountUser {
+  const now = Date.now();
+  const activeSessions = state.sessions.filter((session) =>
+    session.id.startsWith(`${user.id}:`) &&
+    !session.revoked_at &&
+    (!session.expires_at || new Date(session.expires_at).getTime() > now)
+  );
+  return {
+    ...safeUser(user),
+    status: user.status ?? "ACTIVE",
+    created_at: user.created_at,
+    updated_at: user.updated_at,
+    active_session_count: activeSessions.length,
+    is_online: activeSessions.some((session) => new Date(session.last_seen_at ?? session.created_at).getTime() > now - 15 * 60_000),
+    last_login_at: user.last_login_at ?? null,
+  };
 }
 
 function decodeGoogleCredential(credential: string): { sub: string; email: string; name: string } {
@@ -469,6 +601,8 @@ function createSession(state: MockState, user: MockUser): AccountSession {
     current: true,
   };
   state.sessions.unshift({ ...session, id: `${user.id}:${session.id}` });
+  user.last_login_at = now.toISOString();
+  user.updated_at = now.toISOString();
   return state.sessions[0];
 }
 
@@ -505,6 +639,27 @@ function donationAnalytics(state: MockState, period: AnalyticsPeriod, donations:
   };
 }
 
+function topDonors(state: MockState, period: AnalyticsPeriod, limit: number): TopDonorsResponse {
+  const cutoff = periodCutoff(period);
+  const filtered = state.donations.filter((item) => item.status === "COMPLETED" && new Date(item.created_at).getTime() >= cutoff);
+  const map = new Map<string, { revealedName: string | null; hasConsent: boolean; total: number; count: number; last: string }>();
+  for (const donation of filtered) {
+    const current = map.get(donation.donor_id) ?? { revealedName: null, hasConsent: false, total: 0, count: 0, last: donation.created_at };
+    current.total += donation.amount; current.count += 1;
+    if (donation.honor_consent && !donation.anonymous) { current.revealedName = donation.donor_name; current.hasConsent = true; }
+    if (new Date(donation.created_at).getTime() > new Date(current.last).getTime()) current.last = donation.created_at;
+    map.set(donation.donor_id, current);
+  }
+  const donors = [...map.values()]
+    .sort((a, b) => b.total - a.total || new Date(b.last).getTime() - new Date(a.last).getTime())
+    .slice(0, Math.max(1, Math.min(limit, 50)))
+    .map((entry, index) => {
+      const hidden = !entry.hasConsent || !entry.revealedName;
+      return { rank: index + 1, display_name: hidden ? "Nhà hảo tâm ẩn danh" : entry.revealedName!, anonymous: hidden, total_amount: entry.total, donation_count: entry.count, last_donation_at: entry.last };
+    });
+  return { period, as_of: new Date().toISOString(), donors };
+}
+
 function campaignAnalytics(state: MockState, period: AnalyticsPeriod, organizationId?: string): CampaignAnalytics {
   const campaigns = (organizationId ? state.campaigns.filter((item) => item.organization_id === organizationId) : state.campaigns).filter((item) => !item.deleted_at);
   const campaignIds = new Set(campaigns.map((item) => item.id));
@@ -530,11 +685,11 @@ function campaignAnalytics(state: MockState, period: AnalyticsPeriod, organizati
   };
 }
 
-function pushAudit(state: MockState, action: string, entityType: string, entityId: string, service: "IDENTITY" | "CAMPAIGN", newValue?: unknown): void {
+function pushAudit(state: MockState, action: string, entityType: string, entityId: string, service: AuditLogEntry["service"], newValue?: unknown): void {
   state.auditLogs.unshift({ id: createId("audit"), actor_id: requireRole().id, action, entity_type: entityType, entity_id: entityId, created_at: new Date().toISOString(), service, new_value: newValue });
 }
 
-function pushAuditForUser(state: MockState, actorId: string, action: string, entityType: string, entityId: string, service: "IDENTITY" | "CAMPAIGN", newValue?: unknown): void {
+function pushAuditForUser(state: MockState, actorId: string, action: string, entityType: string, entityId: string, service: AuditLogEntry["service"], newValue?: unknown): void {
   state.auditLogs.unshift({ id: createId("audit"), actor_id: actorId, action, entity_type: entityType, entity_id: entityId, created_at: new Date().toISOString(), service, new_value: newValue });
 }
 
@@ -863,6 +1018,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (pathname === "/analytics/donations/me" && method === "GET") { const user = requireRole("DONOR"); return donationAnalytics(state, period, state.donations.filter((item) => item.donor_id === user.id)) as T; }
   if (pathname === "/analytics/donations/organization" && method === "GET") { const user = requireRole("ORGANIZATION"); const ids = new Set(state.campaigns.filter((item) => item.organization_id === user.id && !item.deleted_at).map((item) => item.id)); return donationAnalytics(state, period, state.donations, ids) as T; }
   if (pathname === "/analytics/donations/admin" && method === "GET") { requireRole("ADMIN"); return donationAnalytics(state, period, state.donations) as T; }
+  if (pathname === "/analytics/donations/top-donors" && method === "GET") return topDonors(state, period, Number(url.searchParams.get("limit") ?? 10)) as T;
   if (pathname === "/analytics/campaigns/organization" && method === "GET") { const user = requireRole("ORGANIZATION"); return campaignAnalytics(state, period, user.id) as T; }
   if (pathname === "/analytics/campaigns/admin" && method === "GET") { requireRole("ADMIN"); return campaignAnalytics(state, period) as T; }
   if (pathname === "/analytics/users/admin" && method === "GET") { requireRole("ADMIN"); return { as_of: new Date().toISOString(), role_distribution: (["DONOR", "ORGANIZATION", "ADMIN"] as const).map((role) => ({ role, count: state.users.filter((item) => item.role === role).length })), organization_statuses: (["PENDING", "VERIFIED", "REJECTED"] as const).map((status) => ({ status, count: state.organizations.filter((item) => item.status === status).length })) } as T; }
@@ -1072,6 +1228,63 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (publicReports && method === "GET") {
     return state.impactReports.filter((item) => item.campaign_id === publicReports[1] && item.status === "VERIFIED" && !item.deleted_at) as T;
   }
+  const publicReportsList = pathname.match(/^\/campaigns\/([^/]+)\/reports\/public$/);
+  if (publicReportsList && method === "GET") {
+    const all = state.reports.filter((item) => item.campaign_id === publicReportsList[1]);
+    const items = all.filter((item) => item.status === "RESOLVED" || item.status === "DISMISSED")
+      .map((item) => ({ reference_code: item.reference_code, category: item.category, status: item.status, resolution: item.resolution, created_at: item.created_at, reviewed_at: item.reviewed_at }));
+    return { total: all.length, resolved: items.length, open: all.length - items.length, items } as T;
+  }
+  const submitReport = pathname.match(/^\/campaigns\/([^/]+)\/reports$/);
+  if (submitReport && method === "POST") {
+    const campaign = state.campaigns.find((item) => item.id === submitReport[1] && !item.deleted_at);
+    if (!campaign) throw Object.assign(new Error("Không tìm thấy chiến dịch."), { status: 404 });
+    const category = String(body.category ?? "");
+    const detail = String(body.detail ?? "").trim();
+    if (!["FRAUD", "MISUSE", "FAKE_INFO", "DUPLICATE", "OTHER"].includes(category) || detail.length < 10) {
+      throw Object.assign(new Error("Dữ liệu báo cáo không hợp lệ. Mô tả cần ít nhất 10 ký tự."), { status: 400 });
+    }
+    const now = new Date().toISOString();
+    const report: CampaignReport = {
+      id: createId("report"), reference_code: `BC-${new Date().getFullYear()}-${createId("x").replace(/[^a-z0-9]/gi, "").slice(-8).toUpperCase()}`,
+      campaign_id: campaign.id, campaign_title: campaign.title, reporter_email: body.reporter_email ? String(body.reporter_email) : null,
+      category: category as CampaignReport["category"], detail, status: "RECEIVED", resolution: null, created_at: now, reviewed_at: null, reviewed_by: null,
+    };
+    state.reports.unshift(report);
+    saveState(state);
+    return { reference_code: report.reference_code, status: report.status, created_at: report.created_at, campaign_id: campaign.id, campaign_title: campaign.title, message: "Đã tiếp nhận báo cáo. Vui lòng lưu mã tiếp nhận để tra cứu kết quả xử lý." } as T;
+  }
+  const reportLookup = pathname.match(/^\/reports\/([^/]+)$/);
+  if (reportLookup && method === "GET") {
+    const report = state.reports.find((item) => item.reference_code === decodeURIComponent(reportLookup[1]));
+    if (!report) throw Object.assign(new Error("Không tìm thấy báo cáo với mã này."), { status: 404 });
+    return { reference_code: report.reference_code, category: report.category, status: report.status, resolution: report.resolution, campaign_id: report.campaign_id, campaign_title: report.campaign_title, created_at: report.created_at, reviewed_at: report.reviewed_at } as T;
+  }
+  if (pathname === "/admin/reports" && method === "GET") {
+    requireRole("ADMIN");
+    const status = url.searchParams.get("status");
+    return state.reports.filter((item) => !status || item.status === status) as T;
+  }
+  const resolveReport = pathname.match(/^\/admin\/reports\/([^/]+)\/status$/);
+  if (resolveReport && method === "PATCH") {
+    requireRole("ADMIN");
+    const report = state.reports.find((item) => item.id === resolveReport[1]);
+    if (!report) throw Object.assign(new Error("Không tìm thấy báo cáo."), { status: 404 });
+    const status = String(body.status ?? "");
+    if (!["REVIEWING", "RESOLVED", "DISMISSED"].includes(status)) throw Object.assign(new Error("Trạng thái không hợp lệ."), { status: 400 });
+    const validTransition = report.status === "RECEIVED"
+      ? status === "REVIEWING"
+      : report.status === "REVIEWING" && (status === "RESOLVED" || status === "DISMISSED");
+    if (!validTransition) throw Object.assign(new Error("Báo cáo phải được tiếp nhận, xem xét rồi mới kết luận."), { status: 409 });
+    const resolution = body.resolution ? String(body.resolution) : null;
+    if ((status === "RESOLVED" || status === "DISMISSED") && !resolution) throw Object.assign(new Error("Cần nhập kết quả xử lý công khai."), { status: 400 });
+    report.status = status as CampaignReport["status"];
+    if (resolution) report.resolution = resolution;
+    if (status === "RESOLVED" || status === "DISMISSED") report.reviewed_at = new Date().toISOString();
+    pushAudit(state, `CAMPAIGN_REPORT_${status}`, "CAMPAIGN_REPORT", report.id, "CAMPAIGN", { status });
+    saveState(state);
+    return report as T;
+  }
   if (pathname === "/transparency/ledger" && method === "GET") {
     const campaignId = url.searchParams.get("campaign_id");
     const eventType = url.searchParams.get("event_type");
@@ -1079,6 +1292,42 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const cursor = Number(url.searchParams.get("cursor") ?? Number.MAX_SAFE_INTEGER);
     const items = [...state.ledger].reverse().filter((item) => item.position < cursor && (!campaignId || item.campaign_id === campaignId) && (!eventType || item.event_type === eventType)).slice(0, limit);
     return { items, next_cursor: items.length === limit ? items.at(-1)?.position : null } as T;
+  }
+  if (pathname === "/transparency/reconciliation-report" && method === "GET") {
+    const year = Number(url.searchParams.get("year"));
+    const month = Number(url.searchParams.get("month"));
+    if (!year || year < 2000 || month < 1 || month > 12) throw Object.assign(new Error("Kỳ báo cáo không hợp lệ."), { status: 422 });
+    const start = Date.UTC(year, month - 1, 1);
+    const end = Date.UTC(year + Math.floor(month / 12), month % 12, 1);
+    const inMonth = (iso: string): boolean => { const t = new Date(iso).getTime(); return t >= start && t < end; };
+    const before = (iso: string): boolean => new Date(iso).getTime() < start;
+    const completed = state.donations.filter((item) => item.status === "COMPLETED");
+    const usage = state.ledger.filter((item) => item.event_type === "FUND_USAGE_VERIFIED");
+    const usageAmount = (item: LedgerEntry): number => Number(item.public_payload.amount_used ?? 0);
+    const monthThu = completed.filter((item) => inMonth(item.created_at)).reduce((sum, item) => sum + item.amount, 0);
+    const monthThuCount = completed.filter((item) => inMonth(item.created_at)).length;
+    const monthChi = usage.filter((item) => inMonth(item.created_at)).reduce((sum, item) => sum + usageAmount(item), 0);
+    const opening = completed.filter((item) => before(item.created_at)).reduce((sum, item) => sum + item.amount, 0)
+      - usage.filter((item) => before(item.created_at)).reduce((sum, item) => sum + usageAmount(item), 0);
+    const closing = opening + monthThu - monthChi;
+    const chain = await verifyLedger(state.ledger);
+    const money = (value: number): string => `${value.toLocaleString("en-US")} VND`;
+    return simplePdf([
+      "CHARITYCONNECT - Quy minh bach",
+      "TPBank - STK 10000233598 - TRAN CONG MINH",
+      `BAO CAO DOI SOAT THANG ${String(month).padStart(2, "0")}/${year}`,
+      "",
+      `So du dau ky:      ${money(opening)}`,
+      `Tong thu (${monthThuCount} luot):   ${money(monthThu)}`,
+      `Tong chi:         -${money(monthChi)}`,
+      `So du cuoi ky:     ${money(closing)}`,
+      "",
+      "DOI SOAT & TOAN VEN DU LIEU",
+      `Hash-chain so cai: ${chain.valid ? "HOP LE" : "KHONG HOP LE"} - ${state.ledger.length} ban ghi`,
+      `Doi soat thu Donation <-> So cai: ${chain.valid ? "KHOP" : "CAN KIEM TRA"}`,
+      "",
+      "Ket xuat tu he thong so cai CharityConnect - chong gia mao SHA-256 + Merkle.",
+    ]) as T;
   }
   if (pathname === "/transparency/verify" && method === "GET") {
     const result = await verifyLedger(state.ledger);
@@ -1160,6 +1409,34 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const verificationStatus = !chain.valid || (merkle.anchor && !merkle.proof_valid) ? "INVALID" : merkle.anchor ? "CONFIRMED" : "UNANCHORED";
     return { receipt_number: proof.public_payload.receipt_number, campaign_id: proof.campaign_id, campaign_title: proof.public_payload.campaign_title, amount: proof.public_payload.amount, completed_at: proof.public_payload.completed_at, ledger_hash: proof.entry_hash, ledger_position: proof.position, previous_hash: proof.previous_hash, proof_status: chain.valid ? "CONFIRMED" : "INVALID", merkle_proof: merkle.proof, merkle_root: merkle.merkle_root, merkle_proof_valid: merkle.proof_valid, anchor: merkle.anchor, verification_status: verificationStatus } as T;
   }
+  const reconciliation = pathname.match(/^\/transparency\/reconciliation\/([^/]+)$/);
+  if (reconciliation && method === "GET") {
+    const receiptNumber = decodeURIComponent(reconciliation[1]);
+    const donation = state.donations.find((item) => item.receipt_number === receiptNumber);
+    if (!donation) throw Object.assign(new Error("Không tìm thấy biên nhận."), { status: 404 });
+    const campaign = state.campaigns.find((item) => item.id === donation.campaign_id);
+    const escrow = state.escrows.find((item) => item.campaign_id === donation.campaign_id);
+    const ledgerEntry = state.ledger.find((item) => item.event_type === "DONATION_COMPLETED" && item.entity_id === donation.id);
+    const chain = await verifyLedger(state.ledger);
+    const completed = donation.status === "COMPLETED";
+    const rejected = donation.status === "REJECTED";
+    const money = (value: number): string => `${new Intl.NumberFormat("vi-VN").format(value)} ₫`;
+    const steps = [
+      { key: "RECEIVED", label: "Đã nhận", service: "Donation Service", done: !rejected, at: donation.created_at,
+        detail: rejected ? "Khoản quyên góp đã bị từ chối khi xác minh." : `Ghi nhận ${money(donation.amount)} · biên nhận ${donation.receipt_number}` },
+      { key: "CAMPAIGN_CREDITED", label: "Đã cộng chiến dịch", service: "Campaign Service", done: completed, at: completed ? donation.created_at : null,
+        detail: completed ? `Đã cộng vào “${donation.campaign_title}” · tổng đã nhận ${money(campaign?.raised_amount ?? 0)}` : donation.status === "PENDING_REVIEW" ? "Chờ quản trị viên duyệt trước khi cộng tiền." : "Chưa cộng vào chiến dịch." },
+      { key: "FUNDS_LOCKED", label: "Đã khóa quỹ", service: "Escrow", done: completed, at: completed ? donation.created_at : null,
+        detail: completed ? `Escrow khóa quỹ minh bạch · trạng thái ${escrow?.contract_state ?? "DONATION_OPEN"}` : "Chưa khóa quỹ." },
+      { key: "TRUSTCHAIN", label: "Đã ghi TrustChain", service: "TrustChain", done: Boolean(ledgerEntry), at: ledgerEntry?.created_at ?? null,
+        detail: ledgerEntry ? `Sổ cái #${ledgerEntry.position} · hash ${String(ledgerEntry.entry_hash).slice(0, 16)}…${chain.valid ? " · chuỗi hợp lệ" : ""}` : "Chưa ghi sổ cái." },
+    ] as const;
+    return {
+      receipt_number: donation.receipt_number, amount: donation.amount, campaign_id: donation.campaign_id,
+      campaign_title: donation.campaign_title, created_at: donation.created_at, status: donation.status,
+      steps: steps.map((step) => ({ ...step })), reconciled: steps.every((step) => step.done), chain_valid: chain.valid,
+    } as T;
+  }
   const receiptDiagnostics = pathname.match(/^\/transparency\/diagnostics\/receipts\/([^/]+)$/);
   if (receiptDiagnostics && method === "GET") {
     const proof = state.ledger.find((item) => item.event_type === "DONATION_COMPLETED" && item.public_payload.receipt_number === decodeURIComponent(receiptDiagnostics[1]));
@@ -1224,7 +1501,9 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       const role = body.role === "ORGANIZATION" ? "ORGANIZATION" : "DONOR";
       user = {
         id: createId("google-user"), email: identity.email, name: String(body.name || identity.name), role, status: "ACTIVE",
-        password: createId("google-password"), google_subject: identity.sub,
+        // Google never shares a password. A linked account may create a separate
+        // CharityConnect password later through the authenticated set-password flow.
+        password: null, google_subject: identity.sub, created_at: new Date().toISOString(),
         phone: body.phone ? String(body.phone) : null, province: body.province ? String(body.province) : null,
         address: body.address ? String(body.address) : null, date_of_birth: body.date_of_birth ? String(body.date_of_birth) : null,
         organization_name: body.organization_name ? String(body.organization_name) : null,
@@ -1248,7 +1527,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
       "quantri@charityconnect.vn": "admin@demo.vn",
     };
     const loginEmail = loginAliases[String(body.email)] ?? String(body.email);
-    const user = state.users.find((item) => item.email === loginEmail && item.password === body.password);
+    const user = state.users.find((item) => item.email === loginEmail && Boolean(item.password) && item.password === body.password);
     if (user?.status === "DISABLED") throw Object.assign(new Error("Tài khoản đã bị khóa."), { status: 403 });
     if (!user) throw Object.assign(new Error("Email hoặc mật khẩu chưa đúng."), { status: 401 });
     const session = createSession(state, user);
@@ -1261,6 +1540,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     if (state.users.some((item) => item.email === body.email)) throw Object.assign(new Error("Email đã được sử dụng."), { status: 409 });
     const user: MockUser = {
       id: createId("user"), name: String(body.name), email: String(body.email), password: String(body.password), role: body.role as Role, status: "ACTIVE",
+      created_at: new Date().toISOString(),
       phone: body.phone ? String(body.phone) : null,
       province: body.province ? String(body.province) : null,
       address: body.address ? String(body.address) : null,
@@ -1271,7 +1551,16 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     createSession(state, user); saveState(state);
     return { token: `demo-token-${user.id}`, user: safeUser(user), email_notification: "QUEUED" } as T;
   }
-  if (pathname === "/profile" && method === "GET") return requireRole() as T;
+  if (pathname === "/profile" && method === "GET") {
+    const current = currentUser();
+    if (current) {
+      const userSessions = state.sessions.filter((session) => session.id.startsWith(`${current.id}:`));
+      if (userSessions.length > 0 && userSessions.every((session) => Boolean(session.revoked_at) || (session.expires_at ? new Date(session.expires_at).getTime() <= Date.now() : false))) {
+        throw Object.assign(new Error("Phiên đăng nhập đã bị thu hồi."), { status: 401 });
+      }
+    }
+    return requireRole() as T;
+  }
   if (pathname === "/profile" && ["PATCH", "PUT"].includes(method)) {
     const current = requireRole();
     const user = state.users.find((item) => item.id === current.id);
@@ -1288,13 +1577,26 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (pathname === "/auth/change-password" && method === "POST") {
     const current = requireRole();
     const user = state.users.find((item) => item.id === current.id);
-    if (!user || user.password !== body.current_password) throw Object.assign(new Error("Mật khẩu hiện tại không đúng."), { status: 401 });
+    if (!user?.password || user.password !== body.current_password) throw Object.assign(new Error("Mật khẩu hiện tại không đúng hoặc tài khoản chưa có mật khẩu CharityConnect."), { status: 401 });
     user.password = String(body.new_password);
     const now = new Date().toISOString();
     state.sessions.filter((session) => session.id.startsWith(`${user.id}:`) && !session.current).forEach((session) => { session.revoked_at ??= now; });
     pushAuditForUser(state, user.id, "PASSWORD_CHANGED", "USER", user.id, "IDENTITY", { sessions_revoked: "OTHER_ACTIVE_SESSIONS" });
     saveState(state);
     return { message: "Đã đổi mật khẩu." } as T;
+  }
+  if (pathname === "/auth/set-password" && method === "POST") {
+    const current = requireRole();
+    const user = state.users.find((item) => item.id === current.id);
+    if (!user) throw Object.assign(new Error("Không tìm thấy tài khoản."), { status: 404 });
+    if (user.password) throw Object.assign(new Error("Tài khoản đã có mật khẩu. Hãy dùng chức năng đổi mật khẩu."), { status: 409 });
+    const newPassword = String(body.new_password ?? "");
+    if (newPassword.length < 8) throw Object.assign(new Error("Mật khẩu phải có ít nhất 8 ký tự."), { status: 400 });
+    user.password = newPassword;
+    user.updated_at = new Date().toISOString();
+    pushAuditForUser(state, user.id, "LOCAL_PASSWORD_SET", "USER", user.id, "IDENTITY", { provider: "GOOGLE_AND_PASSWORD" });
+    saveState(state);
+    return { message: "Đã tạo mật khẩu CharityConnect. Bạn có thể đăng nhập bằng Google hoặc email và mật khẩu.", user: safeUser(user) } as T;
   }
   if (pathname === "/auth/password-reset/request" && method === "POST") {
     const user = state.users.find((item) => item.email === body.email && item.status !== "DISABLED");
@@ -1347,7 +1649,82 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     requireRole("ADMIN");
     const role = url.searchParams.get("role");
     const status = url.searchParams.get("status");
-    return state.users.filter((item) => (!role || item.role === role) && (!status || (item.status ?? "ACTIVE") === status)).map((item) => safeUser(item) as AccountUser) as T;
+    return state.users.filter((item) => (!role || item.role === role) && (!status || (item.status ?? "ACTIVE") === status)).map((item) => safeAccountUser(state, item)) as T;
+  }
+  const adminUserProfile = pathname.match(/^\/admin\/users\/([^/]+)\/profile$/);
+  if (adminUserProfile && method === "PATCH") {
+    const admin = requireRole("ADMIN");
+    const user = state.users.find((item) => item.id === adminUserProfile[1]);
+    if (!user) throw Object.assign(new Error("Không tìm thấy tài khoản."), { status: 404 });
+    const reason = String(body.reason ?? "").trim();
+    if (!reason) throw Object.assign(new Error("Vui lòng nhập lý do chỉnh sửa để ghi Audit Log."), { status: 400 });
+    const nextName = body.name === undefined ? user.name : String(body.name).trim();
+    const nextEmail = body.email === undefined ? user.email : String(body.email).trim().toLowerCase();
+    if (nextName.length < 2) throw Object.assign(new Error("Tên người dùng phải có ít nhất 2 ký tự."), { status: 400 });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) throw Object.assign(new Error("Email không hợp lệ."), { status: 400 });
+    if (state.users.some((item) => item.id !== user.id && item.email.toLowerCase() === nextEmail)) throw Object.assign(new Error("Email đã được sử dụng."), { status: 409 });
+    const emailChanged = nextEmail !== user.email.toLowerCase();
+    const now = new Date().toISOString();
+    let revokedSessionCount = 0;
+    if (emailChanged) {
+      state.sessions.filter((session) => session.id.startsWith(`${user.id}:`) && !session.revoked_at).forEach((session) => {
+        session.revoked_at = now;
+        revokedSessionCount += 1;
+      });
+    }
+    user.name = nextName;
+    user.email = nextEmail;
+    user.updated_at = now;
+    pushAuditForUser(state, admin.id, "ADMIN_PROFILE_UPDATED", "USER", user.id, "IDENTITY", { reason, fields: emailChanged ? ["name", "email"] : ["name"], sessions_revoked: revokedSessionCount });
+    saveState(state);
+    return {
+      user: safeAccountUser(state, user),
+      message: emailChanged ? "Đã cập nhật tài khoản và thu hồi các phiên đăng nhập cũ." : "Đã cập nhật tên tài khoản.",
+      revoked_session_count: revokedSessionCount,
+      revoked_refresh_token_count: 0,
+    } as T;
+  }
+  const adminUserPasswordReset = pathname.match(/^\/admin\/users\/([^/]+)\/password-reset$/);
+  if (adminUserPasswordReset && method === "POST") {
+    const admin = requireRole("ADMIN");
+    const user = state.users.find((item) => item.id === adminUserPasswordReset[1]);
+    if (!user) throw Object.assign(new Error("Không tìm thấy tài khoản."), { status: 404 });
+    const reason = String(body.reason ?? "").trim();
+    if (!reason) throw Object.assign(new Error("Vui lòng nhập lý do gửi liên kết mật khẩu."), { status: 400 });
+    const token = createId("admin-reset");
+    state.passwordResetTokens.push({ token, user_id: user.id, expires_at: new Date(Date.now() + 30 * 60_000).toISOString(), used_at: null });
+    state.emailNotifications.push({ event_id: token, template: "PASSWORD_RESET", recipient_user_id: user.id, status: "SIMULATED" });
+    pushAuditForUser(state, admin.id, "ADMIN_PASSWORD_RESET_QUEUED", "USER", user.id, "IDENTITY", { reason, delivery: "QUEUED" });
+    saveState(state);
+    return {
+      message: user.password ? "Đã gửi liên kết đặt lại mật khẩu tới email người dùng." : "Đã gửi liên kết tạo mật khẩu CharityConnect tới email người dùng.",
+      delivery: "QUEUED",
+      password_setup_required: !user.password,
+      user: safeAccountUser(state, user),
+    } as T;
+  }
+  const adminUserRevokeSessions = pathname.match(/^\/admin\/users\/([^/]+)\/revoke-sessions$/);
+  if (adminUserRevokeSessions && method === "POST") {
+    const admin = requireRole("ADMIN");
+    const user = state.users.find((item) => item.id === adminUserRevokeSessions[1]);
+    if (!user) throw Object.assign(new Error("Không tìm thấy tài khoản."), { status: 404 });
+    if (user.id === admin.id) throw Object.assign(new Error("Hãy dùng trang Tài khoản để đăng xuất các phiên của chính bạn."), { status: 409 });
+    const reason = String(body.reason ?? "").trim();
+    if (!reason) throw Object.assign(new Error("Vui lòng nhập lý do thu hồi phiên."), { status: 400 });
+    const now = new Date().toISOString();
+    let revokedSessionCount = 0;
+    state.sessions.filter((session) => session.id.startsWith(`${user.id}:`) && !session.revoked_at).forEach((session) => {
+      session.revoked_at = now;
+      revokedSessionCount += 1;
+    });
+    pushAuditForUser(state, admin.id, "ADMIN_SESSIONS_REVOKED", "USER", user.id, "IDENTITY", { reason, sessions_revoked: revokedSessionCount });
+    saveState(state);
+    return {
+      message: `Đã đăng xuất tài khoản khỏi ${revokedSessionCount} thiết bị/phiên đang hoạt động.`,
+      id: user.id,
+      revoked_session_count: revokedSessionCount,
+      revoked_refresh_token_count: 0,
+    } as T;
   }
   const adminUserStatus = pathname.match(/^\/admin\/users\/([^/]+)\/status$/);
   if (adminUserStatus && method === "PATCH") {
@@ -1355,11 +1732,24 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const user = state.users.find((item) => item.id === adminUserStatus[1]);
     if (!user) throw Object.assign(new Error("Không tìm thấy tài khoản."), { status: 404 });
     if (user.id === admin.id && body.status === "DISABLED") throw Object.assign(new Error("Không thể tự khóa tài khoản quản trị đang dùng."), { status: 409 });
+    const reason = String(body.reason ?? "").trim();
+    if (body.status === "DISABLED" && !reason) throw Object.assign(new Error("Vui lòng nhập lý do khóa tài khoản."), { status: 400 });
     user.status = body.status as MockUser["status"];
-    if (user.status === "DISABLED") state.sessions.filter((session) => session.id.startsWith(`${user.id}:`)).forEach((session) => { session.revoked_at ??= new Date().toISOString(); });
-    pushAuditForUser(state, admin.id, user.status === "DISABLED" ? "USER_DISABLED" : "USER_ENABLED", "USER", user.id, "IDENTITY", { status: user.status });
+    const now = new Date().toISOString();
+    let revokedSessionCount = 0;
+    state.sessions.filter((session) => session.id.startsWith(`${user.id}:`) && !session.revoked_at).forEach((session) => {
+      session.revoked_at = now;
+      revokedSessionCount += 1;
+    });
+    user.updated_at = now;
+    pushAuditForUser(state, admin.id, user.status === "DISABLED" ? "USER_DISABLED" : "USER_ENABLED", "USER", user.id, "IDENTITY", { status: user.status, reason, sessions_revoked: revokedSessionCount });
     saveState(state);
-    return safeUser(user) as T;
+    return {
+      ...safeAccountUser(state, user),
+      message: user.status === "DISABLED" ? `Đã khóa tài khoản và thu hồi ${revokedSessionCount} phiên đăng nhập.` : "Đã mở khóa tài khoản. Người dùng cần đăng nhập lại.",
+      revoked_session_count: revokedSessionCount,
+      revoked_refresh_token_count: 0,
+    } as T;
   }
 
   if (pathname === "/me/campaign-preferences" && method === "GET") {
@@ -1404,9 +1794,23 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
   if (pathname === "/organizations/application" && method === "POST") {
     const user = requireRole("ORGANIZATION");
     const existing = state.organizations.find((item) => item.user_id === user.id);
-    const application: OrganizationProfile = { user_id: user.id, email: user.email, legal_name: String(body.legalName), registration_number: String(body.registrationNumber), description: String(body.description ?? ""), status: "PENDING" };
+    const submittedAt = new Date().toISOString();
+    const submitEvent: OrgStatusEvent = { action: "ORGANIZATION_SUBMITTED", at: submittedAt, reason: null };
+    const application: OrganizationProfile = { user_id: user.id, email: user.email, legal_name: String(body.legalName), registration_number: String(body.registrationNumber), description: String(body.description ?? ""), status: "PENDING", submitted_at: submittedAt, has_document: true, verified_at: null, expires_at: null, history: [...(existing?.history ?? []), submitEvent] };
     if (existing) Object.assign(existing, application); else state.organizations.push(application);
     saveState(state); return application as T;
+  }
+  const orgVerification = pathname.match(/^\/organizations\/([^/]+)\/verification$/);
+  if (orgVerification && method === "GET") {
+    const org = state.organizations.find((item) => item.user_id === orgVerification[1]);
+    if (!org) throw Object.assign(new Error("Không tìm thấy tổ chức."), { status: 404 });
+    return {
+      id: org.user_id, legal_name: org.legal_name, registration_number: org.registration_number,
+      description: org.description, status: org.status, submitted_at: org.submitted_at ?? null,
+      verified_at: org.status === "VERIFIED" ? org.verified_at ?? null : null,
+      expires_at: org.status === "VERIFIED" ? org.expires_at ?? null : null,
+      has_document: Boolean(org.has_document), history: org.history ?? [],
+    } as T;
   }
   if (pathname === "/admin/organizations" && method === "GET") {
     requireRole("ADMIN");
@@ -1418,8 +1822,12 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     requireRole("ADMIN");
     const item = state.organizations.find((organization) => organization.user_id === organizationStatus[1]);
     if (!item) throw Object.assign(new Error("Không tìm thấy tổ chức."), { status: 404 });
+    const now = new Date().toISOString();
     item.status = body.status as OrganizationProfile["status"];
     item.rejection_reason = body.reason ? String(body.reason) : null;
+    item.verified_at = item.status === "VERIFIED" ? now : null;
+    item.expires_at = item.status === "VERIFIED" ? new Date(Date.now() + 86_400_000 * 365).toISOString() : null;
+    item.history = [...(item.history ?? []), { action: `ORGANIZATION_${item.status}`, at: now, reason: item.rejection_reason }];
     saveState(state); return item as T;
   }
 
@@ -1630,20 +2038,52 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const user = requireRole("DONOR");
     const campaign = publicCampaigns(state).find((item) => item.id === body.campaign_id);
     if (!campaign) throw Object.assign(new Error("Chiến dịch không còn nhận quyên góp."), { status: 409 });
+    const amount = Number(body.amount);
+    if (!Number.isSafeInteger(amount) || amount < 1_000 || amount > 1_000_000_000) {
+      throw Object.assign(new Error("Số tiền quyên góp phải là số nguyên từ 1.000 ₫ đến 1.000.000.000 ₫."), { status: 400 });
+    }
     const now = new Date().toISOString();
-    const donation = { id: createId("donation"), campaign_id: campaign.id, campaign_title: campaign.title, amount: Number(body.amount), anonymous: Boolean(body.anonymous), status: "COMPLETED" as const, created_at: now, receipt_number: `CC-${new Date().getFullYear()}-${String(state.donations.length + 129).padStart(6, "0")}`, donor_id: user.id, donor_name: user.name, issued_at: now };
-    campaign.raised_amount = Math.min(campaign.goal_amount, campaign.raised_amount + donation.amount);
-    const escrow = state.escrows.find((item) => item.campaign_id === campaign.id); if (escrow) { escrow.total_donated += donation.amount; escrow.locked_amount += donation.amount; escrow.contract_state = "DONATION_OPEN"; escrow.updated_at = now; escrow.history.push({ state: "DONATION_OPEN", amount: donation.amount, created_at: now }); }
-    const proof = await appendLedger(state, {
-      event_id: donation.id, event_type: "DONATION_COMPLETED", campaign_id: campaign.id,
-      entity_id: donation.id, created_at: now,
-      public_payload: { amount: donation.amount, campaign_id: campaign.id, campaign_title: campaign.title, completed_at: now, receipt_number: donation.receipt_number }
-    });
-    Object.assign(donation, { ledger_hash: proof.entry_hash, ledger_position: proof.position, proof_status: "CONFIRMED" });
-    state.donations.unshift(donation); state.emailNotifications.push({ event_id: donation.id, template: "DONATION_THANK_YOU", recipient_user_id: user.id, status: "SIMULATED" });
-    const formattedAmount = new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(donation.amount);
-    state.notifications.unshift({ id: createId("notice"), event_id: donation.id, user_id: user.id, type: "DONATION_RECEIVED", campaign_id: campaign.id, title: "Cảm ơn bạn đã quyên góp", message: `Bạn đã quyên góp ${formattedAmount} cho chiến dịch "${campaign.title}". Cảm ơn tấm lòng của bạn!`, path: `/bien-nhan/${donation.id}`, read_at: null, created_at: now });
+    const requiresReview = amount >= DONATION_APPROVAL_THRESHOLD;
+    const donation: MockState["donations"][number] = { id: createId("donation"), campaign_id: campaign.id, campaign_title: campaign.title, amount, anonymous: Boolean(body.anonymous), honor_consent: Boolean(body.honor_consent), status: requiresReview ? "PENDING_REVIEW" : "COMPLETED", created_at: now, receipt_number: `CC-${new Date().getFullYear()}-${String(state.donations.length + 129).padStart(6, "0")}`, donor_id: user.id, donor_name: user.name, issued_at: now };
+    state.donations.unshift(donation);
+    if (requiresReview) {
+      // Khoản lớn: giữ chờ admin duyệt, chưa cộng tiền/ghi sổ cái.
+      donation.proof_status = "PENDING_REVIEW";
+      state.notifications.unshift({ id: createId("notice"), event_id: donation.id, user_id: user.id, type: "DONATION_RECEIVED", campaign_id: campaign.id, title: "Khoản quyên góp đang chờ duyệt", message: `Khoản quyên góp lớn cho "${campaign.title}" đang chờ quản trị viên xác minh trước khi ghi nhận công khai.`, path: `/bien-nhan/${donation.id}`, read_at: null, created_at: now });
+      saveState(state);
+      return { ...donation, review_threshold: DONATION_APPROVAL_THRESHOLD, message: "Khoản quyên góp lớn đang chờ quản trị viên xác minh trước khi ghi nhận công khai." } as T;
+    }
+    // The campaign, ledger and escrow must all record the same completed amount.
+    await finalizeMockDonation(state, donation);
     saveState(state); return donation as T;
+  }
+  if (pathname === "/admin/donations/pending" && method === "GET") {
+    requireRole("ADMIN");
+    return state.donations.filter((item) => item.status === "PENDING_REVIEW").map((item) => ({
+      id: item.id, donor_name: item.anonymous ? "Ẩn danh" : item.donor_name, campaign_id: item.campaign_id,
+      campaign_title: item.campaign_title, amount: item.amount, anonymous: item.anonymous,
+      honor_consent: Boolean(item.honor_consent), status: item.status, created_at: item.created_at, receipt_number: item.receipt_number,
+    })) as T;
+  }
+  const approveDonation = pathname.match(/^\/admin\/donations\/([^/]+)\/approve$/);
+  if (approveDonation && method === "POST") {
+    requireRole("ADMIN");
+    const donation = state.donations.find((item) => item.id === approveDonation[1]);
+    if (!donation || donation.status !== "PENDING_REVIEW") throw Object.assign(new Error("Khoản quyên góp không ở trạng thái chờ duyệt."), { status: 409 });
+    await finalizeMockDonation(state, donation);
+    pushAudit(state, "DONATION_APPROVED", "DONATION", donation.id, "DONATION", { amount: donation.amount });
+    saveState(state);
+    return { id: donation.id, status: "COMPLETED", receipt_number: donation.receipt_number, ledger_hash: donation.ledger_hash, ledger_position: donation.ledger_position, proof_status: "CONFIRMED" } as T;
+  }
+  const rejectDonation = pathname.match(/^\/admin\/donations\/([^/]+)\/reject$/);
+  if (rejectDonation && method === "POST") {
+    requireRole("ADMIN");
+    const donation = state.donations.find((item) => item.id === rejectDonation[1]);
+    if (!donation || donation.status !== "PENDING_REVIEW") throw Object.assign(new Error("Khoản quyên góp không ở trạng thái chờ duyệt."), { status: 409 });
+    donation.status = "REJECTED"; donation.review_reason = String(body.reason ?? "");
+    pushAudit(state, "DONATION_REJECTED", "DONATION", donation.id, "DONATION", { amount: donation.amount, reason: donation.review_reason });
+    saveState(state);
+    return { id: donation.id, status: "REJECTED", reason: donation.review_reason } as T;
   }
   if (pathname === "/donations/history" && method === "GET") {
     const user = requireRole("DONOR");

@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, Building2, ExternalLink, FileCheck2, Gauge, Landmark, ListChecks, Mail, ShieldCheck, UserRoundCheck, Users, X } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Building2, CircleAlert, Edit3, ExternalLink, FileCheck2, Gauge, KeyRound, Landmark, ListChecks, LockKeyhole, Mail, ShieldCheck, UserRoundCheck, Users, X } from "lucide-react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { StatusBadge } from "../components/StatusBadge";
 import { api, formatVnd } from "../lib/api";
-import type { AccountUser, AuditLogEntry, Campaign, ImpactReport, LedgerAnchor, RiskAssessment, Role, UserStatus } from "../types";
+import type { AccountUser, AdminReport, AuditLogEntry, Campaign, ImpactReport, LedgerAnchor, PendingDonation, RiskAssessment, Role, UserStatus } from "../types";
+import { categoryLabel } from "./ReportPage";
 
 interface OrganizationReview {
   user_id: string;
@@ -13,6 +14,15 @@ interface OrganizationReview {
   email: string;
   status: string;
   description: string;
+}
+
+interface AdminUserActionResponse {
+  user?: AccountUser;
+  message?: string;
+  revoked_session_count?: number;
+  revoked_refresh_token_count?: number;
+  delivery?: "QUEUED";
+  password_setup_required?: boolean;
 }
 
 type Tab = "queue" | "organizations" | "users" | "risk" | "audit" | "trustchain";
@@ -30,12 +40,16 @@ export function AdminPage(): JSX.Element {
   const client = useQueryClient();
   const [params, setParams] = useSearchParams();
   const [selectedOrganization, setSelectedOrganization] = useState<OrganizationReview | null>(null);
+  const [selectedUser, setSelectedUser] = useState<AccountUser | null>(null);
+  const [userFeedback, setUserFeedback] = useState("");
   const tab = (params.get("tab") as Tab) || "queue";
 
   const organizations = useQuery({ queryKey: ["admin-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations?status=PENDING") });
   const allOrganizations = useQuery({ queryKey: ["admin-all-organizations"], queryFn: () => api<OrganizationReview[]>("/admin/organizations"), enabled: tab === "organizations" });
   const campaigns = useQuery({ queryKey: ["admin-campaigns"], queryFn: () => api<Campaign[]>("/admin/campaigns?status=PENDING_REVIEW") });
   const reports = useQuery({ queryKey: ["admin-impact-reports"], queryFn: () => api<ImpactReport[]>("/admin/impact-reports?status=PENDING_REVIEW") });
+  const pendingDonations = useQuery({ queryKey: ["admin-pending-donations"], queryFn: () => api<PendingDonation[]>("/admin/donations/pending") });
+  const campaignReports = useQuery({ queryKey: ["admin-reports"], queryFn: () => api<AdminReport[]>("/admin/reports") });
   const users = useQuery({ queryKey: ["admin-users"], queryFn: () => api<AccountUser[]>("/admin/users"), enabled: tab === "users" });
   const risks = useQuery({ queryKey: ["admin-risks"], queryFn: () => api<RiskAssessment[]>("/admin/campaign-risks") });
   const identityAudit = useQuery({ queryKey: ["admin-audit", "identity"], queryFn: () => api<AuditLogEntry[]>("/admin/audit-logs/identity"), enabled: tab === "audit" });
@@ -56,15 +70,61 @@ export function AdminPage(): JSX.Element {
     onSuccess: () => void client.invalidateQueries({ queryKey: ["admin-impact-reports"] })
   });
   const userStatusAction = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: UserStatus }) => api(`/admin/users/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
-    onSuccess: () => void client.invalidateQueries({ queryKey: ["admin-users"] })
+    mutationFn: ({ id, status, reason }: { id: string; status: UserStatus; reason?: string }) => api<AdminUserActionResponse & AccountUser>(`/admin/users/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, reason }) }),
+    onSuccess: (data) => {
+      setUserFeedback(data.message ?? (data.status === "DISABLED" ? "Đã khóa tài khoản và thu hồi toàn bộ phiên đăng nhập." : "Đã mở khóa tài khoản."));
+      void client.invalidateQueries({ queryKey: ["admin-users"] });
+    }
+  });
+  const userProfileAction = useMutation({
+    mutationFn: ({ id, name, email, reason }: { id: string; name: string; email: string; reason: string }) =>
+      api<AdminUserActionResponse>(`/admin/users/${id}/profile`, { method: "PATCH", body: JSON.stringify({ name, email, reason }) }),
+    onSuccess: (data) => {
+      setSelectedUser(null);
+      setUserFeedback(data.message ?? "Đã cập nhật tài khoản.");
+      void client.invalidateQueries({ queryKey: ["admin-users"] });
+    }
+  });
+  const userPasswordResetAction = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
+      api<AdminUserActionResponse>(`/admin/users/${id}/password-reset`, { method: "POST", body: JSON.stringify({ reason }) }),
+    onSuccess: (data) => {
+      setSelectedUser(null);
+      setUserFeedback(data.message ?? "Đã xếp email mật khẩu vào hàng đợi gửi.");
+      void client.invalidateQueries({ queryKey: ["admin-users"] });
+    }
+  });
+  const userRevokeSessionsAction = useMutation({
+    mutationFn: ({ id, reason }: { id: string; reason: string }) =>
+      api<AdminUserActionResponse>(`/admin/users/${id}/revoke-sessions`, { method: "POST", body: JSON.stringify({ reason }) }),
+    onSuccess: (data) => {
+      setSelectedUser(null);
+      setUserFeedback(data.message ?? `Đã thu hồi ${data.revoked_session_count ?? 0} phiên đăng nhập.`);
+      void client.invalidateQueries({ queryKey: ["admin-users"] });
+    }
+  });
+  const donationReview = useMutation({
+    mutationFn: ({ id, decision, reason }: { id: string; decision: "approve" | "reject"; reason?: string }) =>
+      api(`/admin/donations/${id}/${decision}`, { method: "POST", body: decision === "reject" ? JSON.stringify({ reason }) : undefined }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["admin-pending-donations"] });
+      for (const key of [["analytics-donations-public"], ["analytics-campaigns-public"], ["top-donors"], ["public-ledger-statement"], ["public-ledger"], ["ledger-verification"]]) {
+        void client.invalidateQueries({ queryKey: key, refetchType: "none" });
+      }
+    }
+  });
+  const reportReview = useMutation({
+    mutationFn: ({ id, status, resolution }: { id: string; status: "REVIEWING" | "RESOLVED" | "DISMISSED"; resolution?: string }) =>
+      api(`/admin/reports/${id}/status`, { method: "PATCH", body: JSON.stringify({ status, resolution }) }),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ["admin-reports"] })
   });
 
   function rejection(label: string): string | undefined {
     return window.prompt(`Lý do từ chối ${label}`)?.trim() || undefined;
   }
 
-  const queueCount = (organizations.data?.length ?? 0) + (campaigns.data?.length ?? 0) + (reports.data?.length ?? 0);
+  const openReports = (campaignReports.data ?? []).filter((item) => item.status === "RECEIVED" || item.status === "REVIEWING");
+  const queueCount = (organizations.data?.length ?? 0) + (campaigns.data?.length ?? 0) + (reports.data?.length ?? 0) + (pendingDonations.data?.length ?? 0) + openReports.length;
   const highRisk = (risks.data ?? []).filter((item) => item.level === "HIGH").length;
 
   return (
@@ -128,6 +188,51 @@ export function AdminPage(): JSX.Element {
             </Queue>
 
             <section className="xl:col-span-2">
+              <Queue title="Khoản quyên góp lớn chờ duyệt" count={pendingDonations.data?.length ?? 0}>
+                {pendingDonations.data?.map((item) => (
+                  <ReviewCard
+                    key={item.id}
+                    title={`${formatVnd(item.amount)} · ${item.campaign_title}`}
+                    subtitle={`${item.donor_name}${item.honor_consent ? " · đồng ý vinh danh" : ""} · ${item.receipt_number} · ${new Date(item.created_at).toLocaleString("vi-VN")}`}
+                    description="Khoản vượt ngưỡng cần xác minh. Duyệt sẽ cộng tiền vào chiến dịch, cập nhật escrow và ghi sổ cái TrustChain; từ chối thì không ghi nhận."
+                    status={item.status}
+                    relatedText="Chỉ khi duyệt, khoản mới xuất hiện trong thống kê, sao kê và bảng Tấm lòng vàng."
+                    onApprove={() => donationReview.mutate({ id: item.id, decision: "approve" })}
+                    onReject={() => { const reason = rejection("khoản quyên góp"); if (reason) donationReview.mutate({ id: item.id, decision: "reject", reason }); }}
+                  />
+                ))}
+              </Queue>
+            </section>
+
+            <section className="xl:col-span-2">
+              <Queue title="Báo cáo chiến dịch đáng ngờ" count={openReports.length}>
+                {openReports.map((item) => (
+                  <ReviewCard
+                    key={item.id}
+                    title={`${item.reference_code} · ${item.campaign_title}`}
+                    subtitle={`${categoryLabel(item.category)} · ${item.reporter_email ?? "ẩn danh"} · ${new Date(item.created_at).toLocaleString("vi-VN")}`}
+                    description={item.detail}
+                    status={item.status}
+                    href={`/chien-dich/${item.campaign_id}`}
+                    detailLabel="Xem chiến dịch"
+                    relatedText="Kết quả xử lý sẽ công khai để người báo cáo tra cứu bằng mã tiếp nhận."
+                    approveLabel={item.status === "RECEIVED" ? "Bắt đầu xem xét" : "Đánh dấu đã xử lý"}
+                    rejectLabel="Bỏ qua"
+                    onApprove={() => {
+                      if (item.status === "RECEIVED") {
+                        reportReview.mutate({ id: item.id, status: "REVIEWING" });
+                        return;
+                      }
+                      const resolution = window.prompt("Kết quả xử lý công khai (đánh dấu ĐÃ XỬ LÝ)")?.trim();
+                      if (resolution) reportReview.mutate({ id: item.id, status: "RESOLVED", resolution });
+                    }}
+                    onReject={item.status === "REVIEWING" ? () => { const resolution = window.prompt("Lý do bỏ qua (công khai)")?.trim(); if (resolution) reportReview.mutate({ id: item.id, status: "DISMISSED", resolution }); } : undefined}
+                  />
+                ))}
+              </Queue>
+            </section>
+
+            <section className="xl:col-span-2">
               <Queue title="Báo cáo tác động" count={reports.data?.length ?? 0}>
                 {reports.data?.map((item) => (
                   <ReviewCard
@@ -148,7 +253,36 @@ export function AdminPage(): JSX.Element {
         )}
 
         {tab === "organizations" && <OrganizationsTable items={allOrganizations.data ?? []} loading={allOrganizations.isLoading} onDetail={setSelectedOrganization} />}
-        {tab === "users" && <UsersTable items={users.data ?? []} loading={users.isLoading} busy={userStatusAction.isPending} onStatus={(id, status) => userStatusAction.mutate({ id, status })} />}
+        {tab === "users" && (
+          <div className="space-y-4">
+            {userFeedback && (
+              <div className="flex items-start justify-between gap-3 rounded-2xl border border-brand-200 bg-brand-50 px-4 py-3 text-sm font-bold text-brand-900" role="status">
+                <span>{userFeedback}</span>
+                <button className="shrink-0 rounded-lg p-1 hover:bg-brand-100" aria-label="Đóng thông báo" onClick={() => setUserFeedback("")}><X size={16} /></button>
+              </div>
+            )}
+            {(userStatusAction.error || userProfileAction.error || userPasswordResetAction.error || userRevokeSessionsAction.error) && (
+              <p className="rounded-2xl bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700" role="alert">
+                {(userStatusAction.error ?? userProfileAction.error ?? userPasswordResetAction.error ?? userRevokeSessionsAction.error)?.message}
+              </p>
+            )}
+            <UsersTable
+              items={users.data ?? []}
+              loading={users.isLoading}
+              busy={userStatusAction.isPending || userProfileAction.isPending || userPasswordResetAction.isPending || userRevokeSessionsAction.isPending}
+              onEdit={setSelectedUser}
+              onStatus={(item, status) => {
+                const reason = window.prompt(status === "DISABLED" ? `Nhập lý do khóa tài khoản ${item.email}` : `Ghi chú mở khóa tài khoản ${item.email}`)?.trim();
+                if (status === "DISABLED" && !reason) return;
+                if (!window.confirm(status === "DISABLED"
+                  ? `Khóa ${item.name}? Tất cả phiên đăng nhập và refresh token sẽ bị thu hồi ngay.`
+                  : `Mở khóa ${item.name}? Người dùng vẫn phải đăng nhập lại.`)) return;
+                setUserFeedback("");
+                userStatusAction.mutate({ id: item.id, status, reason });
+              }}
+            />
+          </div>
+        )}
         {tab === "risk" && <RiskTable items={risks.data ?? []} loading={risks.isLoading} />}
         {tab === "audit" && <AuditTable items={[...(identityAudit.data ?? []), ...(campaignAudit.data ?? [])].sort((a, b) => b.created_at.localeCompare(a.created_at))} loading={identityAudit.isLoading || campaignAudit.isLoading} />}
         {tab === "trustchain" && <TrustChainPanel anchors={anchors.data?.items ?? []} loading={anchors.isLoading} onCreate={() => anchor.mutate()} creating={anchor.isPending} />}
@@ -161,6 +295,27 @@ export function AdminPage(): JSX.Element {
         onReject={(id) => {
           const reason = rejection("tổ chức");
           if (reason) organizationAction.mutate({ id, status: "REJECTED", reason }, { onSuccess: () => setSelectedOrganization(null) });
+        }}
+      />
+      <AccountEditorModal
+        item={selectedUser}
+        busy={userProfileAction.isPending || userPasswordResetAction.isPending || userRevokeSessionsAction.isPending}
+        error={(userProfileAction.error ?? userPasswordResetAction.error ?? userRevokeSessionsAction.error) as Error | null}
+        onClose={() => setSelectedUser(null)}
+        onSave={(payload) => {
+          if (!selectedUser) return;
+          setUserFeedback("");
+          userProfileAction.mutate({ id: selectedUser.id, ...payload });
+        }}
+        onPasswordReset={(reason) => {
+          if (!selectedUser) return;
+          setUserFeedback("");
+          userPasswordResetAction.mutate({ id: selectedUser.id, reason });
+        }}
+        onRevokeSessions={(reason) => {
+          if (!selectedUser) return;
+          setUserFeedback("");
+          userRevokeSessionsAction.mutate({ id: selectedUser.id, reason });
         }}
       />
     </div>
@@ -179,7 +334,7 @@ function Queue({ title, count, children }: { title: string; count: number; child
   );
 }
 
-function ReviewCard({ title, subtitle, description, status, relatedText, href, detailLabel, onDetail, onApprove, onReject }: { title: string; subtitle: string; description: string; status: string; relatedText: string; href?: string; detailLabel?: string; onDetail?: () => void; onApprove: () => void; onReject: () => void }): JSX.Element {
+function ReviewCard({ title, subtitle, description, status, relatedText, href, detailLabel, approveLabel = "Duyệt", rejectLabel = "Từ chối", onDetail, onApprove, onReject }: { title: string; subtitle: string; description: string; status: string; relatedText: string; href?: string; detailLabel?: string; approveLabel?: string; rejectLabel?: string; onDetail?: () => void; onApprove: () => void; onReject?: () => void }): JSX.Element {
   return (
     <article className="card p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -190,8 +345,8 @@ function ReviewCard({ title, subtitle, description, status, relatedText, href, d
       <p className="mt-3 text-sm leading-6 text-slate-700">{description}</p>
       <p className="mt-3 rounded-xl bg-sage-100 p-3 text-xs font-semibold leading-5 text-slate-700">{relatedText}</p>
       <div className="mt-5 flex flex-wrap gap-2">
-        <button className="btn-primary !min-h-10 !px-3" onClick={onApprove}>Duyệt</button>
-        <button className="btn-secondary !min-h-10 !px-3" onClick={onReject}>Từ chối</button>
+        <button className="btn-primary !min-h-10 !px-3" onClick={onApprove}>{approveLabel}</button>
+        {onReject && <button className="btn-secondary !min-h-10 !px-3" onClick={onReject}>{rejectLabel}</button>}
         {onDetail && <button className="inline-flex min-h-10 items-center gap-1 rounded-xl border border-ink/10 px-3 text-sm font-black hover:bg-sage-100" onClick={onDetail}>{detailLabel ?? "Xem chi tiết"} <ExternalLink size={14} /></button>}
         {href && <Link className="inline-flex min-h-10 items-center gap-1 rounded-xl border border-ink/10 px-3 text-sm font-black hover:bg-sage-100" to={href}>Dữ liệu liên quan <ExternalLink size={14} /></Link>}
       </div>
@@ -303,39 +458,150 @@ function OrganizationsTable({ items, loading, onDetail }: { items: OrganizationR
   );
 }
 
-function UsersTable({ items, loading, busy, onStatus }: { items: AccountUser[]; loading: boolean; busy: boolean; onStatus: (id: string, status: UserStatus) => void }): JSX.Element {
+function UsersTable({ items, loading, busy, onStatus, onEdit }: {
+  items: AccountUser[];
+  loading: boolean;
+  busy: boolean;
+  onStatus: (item: AccountUser, status: UserStatus) => void;
+  onEdit: (item: AccountUser) => void;
+}): JSX.Element {
   const roleLabel: Record<Role, string> = { DONOR: "Người quyên góp", ORGANIZATION: "Tổ chức", ADMIN: "Quản trị" };
   return (
     <section className="card overflow-hidden">
       <div className="border-b border-ink/10 p-5">
         <h2 className="text-xl font-black">Quản lý tài khoản</h2>
-        <p className="mt-2 text-sm text-slate-500">Admin chỉ được khóa/mở tài khoản và xem trạng thái; không được xem hoặc đổi mật khẩu người dùng.</p>
+        <p className="mt-2 max-w-4xl text-sm leading-6 text-slate-500">Admin có thể cập nhật tên/email, khóa tài khoản, đăng xuất mọi thiết bị hoặc gửi liên kết tạo/đặt lại mật khẩu. Hệ thống không bao giờ hiển thị mật khẩu hiện tại và Google cũng không cung cấp mật khẩu cho CharityConnect.</p>
       </div>
       {loading ? <div className="skeleton m-5 h-64" /> : (
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[820px] text-left text-sm">
-            <thead className="bg-slate-50"><tr><th className="p-4">Người dùng</th><th className="p-4">Vai trò</th><th className="p-4">Trạng thái</th><th className="p-4">Ngày tạo</th><th className="p-4">Thao tác</th></tr></thead>
+        <>
+          <div className="grid gap-3 p-4 md:hidden">
+            {items.map((item) => (
+              <article className="rounded-2xl border border-ink/10 p-4" key={item.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0"><strong className="block truncate">{item.name}</strong><span className="block truncate text-xs text-slate-500">{item.email}</span></div>
+                  <StatusBadge status={item.status ?? "ACTIVE"} />
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold">
+                  <span className="rounded-full bg-sage-100 px-2.5 py-1">{roleLabel[item.role]}</span>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1">{providerLabel(item)}</span>
+                  <span className={item.is_online ? "rounded-full bg-emerald-50 px-2.5 py-1 text-emerald-700" : "rounded-full bg-slate-100 px-2.5 py-1 text-slate-500"}>{item.is_online ? "Đang hoạt động" : "Ngoại tuyến"} · {item.active_session_count ?? 0} phiên</span>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button className="btn-outline !min-h-10 !px-3" disabled={busy} onClick={() => onEdit(item)}><Edit3 size={15} /> Quản lý</button>
+                  {item.status === "DISABLED"
+                    ? <button className="btn-primary !min-h-10 !px-3" disabled={busy} onClick={() => onStatus(item, "ACTIVE")}>Mở khóa</button>
+                    : <button className="btn-secondary !min-h-10 !px-3" disabled={busy || item.role === "ADMIN"} onClick={() => onStatus(item, "DISABLED")}><LockKeyhole size={15} /> Khóa</button>}
+                </div>
+                {item.role === "ADMIN" && <p className="mt-2 text-xs text-slate-400">Không thể khóa tài khoản quản trị từ bảng này.</p>}
+              </article>
+            ))}
+            {items.length === 0 && <p className="p-2 text-sm text-slate-500">Chưa có tài khoản.</p>}
+          </div>
+
+          <div className="hidden overflow-x-auto md:block">
+          <table className="w-full min-w-[1060px] text-left text-sm">
+            <thead className="bg-slate-50"><tr><th className="p-4">Người dùng</th><th className="p-4">Vai trò</th><th className="p-4">Đăng nhập</th><th className="p-4">Phiên</th><th className="p-4">Trạng thái</th><th className="p-4">Ngày tạo</th><th className="p-4">Thao tác</th></tr></thead>
             <tbody>
               {items.map((item) => (
                 <tr className="border-t border-ink/10" key={item.id}>
                   <td className="p-4"><strong>{item.name}</strong><span className="block text-xs text-slate-500">{item.email}</span></td>
                   <td className="p-4">{roleLabel[item.role]}</td>
+                  <td className="p-4"><span className="rounded-full bg-sage-100 px-2.5 py-1 text-xs font-black">{providerLabel(item)}</span></td>
+                  <td className="p-4"><span className={item.is_online ? "font-bold text-emerald-700" : "text-slate-500"}>{item.is_online ? "Đang hoạt động" : "Ngoại tuyến"}</span><span className="block text-xs text-slate-400">{item.active_session_count ?? 0} phiên</span></td>
                   <td className="p-4"><StatusBadge status={item.status ?? "ACTIVE"} /></td>
                   <td className="p-4">{item.created_at ? new Date(item.created_at).toLocaleDateString("vi-VN") : "—"}</td>
                   <td className="p-4">
+                    <button className="btn-outline mr-2 !min-h-10 !px-3" disabled={busy} onClick={() => onEdit(item)}><Edit3 size={15} /> Quản lý</button>
                     {item.status === "DISABLED"
-                      ? <button className="btn-primary !min-h-10 !px-3" disabled={busy} onClick={() => onStatus(item.id, "ACTIVE")}>Mở khóa</button>
-                      : <button className="btn-secondary !min-h-10 !px-3" disabled={busy || item.role === "ADMIN"} onClick={() => onStatus(item.id, "DISABLED")}>Khóa</button>}
+                      ? <button className="btn-primary !min-h-10 !px-3" disabled={busy} onClick={() => onStatus(item, "ACTIVE")}>Mở khóa</button>
+                      : <button className="btn-secondary !min-h-10 !px-3" disabled={busy || item.role === "ADMIN"} onClick={() => onStatus(item, "DISABLED")}><LockKeyhole size={15} /> Khóa</button>}
                     {item.role === "ADMIN" && <span className="ml-2 text-xs text-slate-400">Không thể khóa tài khoản quản trị</span>}
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && <tr><td className="p-5 text-slate-500" colSpan={5}>Chưa có tài khoản.</td></tr>}
+              {items.length === 0 && <tr><td className="p-5 text-slate-500" colSpan={7}>Chưa có tài khoản.</td></tr>}
             </tbody>
           </table>
         </div>
+        </>
       )}
     </section>
+  );
+}
+
+function providerLabel(item: AccountUser): string {
+  if (item.auth_provider === "GOOGLE_AND_PASSWORD") return "Google + mật khẩu";
+  if (item.auth_provider === "GOOGLE" || (item.google_connected && !item.has_local_password)) return "Google";
+  return "Email + mật khẩu";
+}
+
+function AccountEditorModal({ item, busy, error, onClose, onSave, onPasswordReset, onRevokeSessions }: {
+  item: AccountUser | null;
+  busy: boolean;
+  error: Error | null;
+  onClose: () => void;
+  onSave: (payload: { name: string; email: string; reason: string }) => void;
+  onPasswordReset: (reason: string) => void;
+  onRevokeSessions: (reason: string) => void;
+}): JSX.Element | null {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [reason, setReason] = useState("");
+
+  useEffect(() => {
+    setName(item?.name ?? "");
+    setEmail(item?.email ?? "");
+    setReason("");
+  }, [item?.id, item?.name, item?.email]);
+
+  if (!item) return null;
+  const emailChanged = email.trim().toLowerCase() !== item.email.toLowerCase();
+  const canSubmit = name.trim().length >= 2 && /[^\s@]+@[^\s@]+\.[^\s@]+/.test(email) && reason.trim().length >= 3;
+  function submit(event: FormEvent): void {
+    event.preventDefault();
+    if (canSubmit) onSave({ name: name.trim(), email: email.trim().toLowerCase(), reason: reason.trim() });
+  }
+  return (
+    <div className="fixed inset-0 z-[90] grid place-items-end bg-ink/60 backdrop-blur-sm sm:place-items-center sm:p-4" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+      <section className="max-h-[94vh] w-full overflow-y-auto rounded-t-[2rem] bg-white shadow-2xl sm:max-w-2xl sm:rounded-[2rem]" role="dialog" aria-modal="true" aria-labelledby="account-editor-title">
+        <header className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-ink/10 bg-white p-5 sm:p-6">
+          <div><p className="text-xs font-black uppercase tracking-[.16em] text-brand-700">Account Control</p><h2 id="account-editor-title" className="mt-2 text-2xl font-black">Quản lý {item.name}</h2></div>
+          <button className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-ink/10 hover:bg-sage-100" aria-label="Đóng" onClick={onClose}><X size={20} /></button>
+        </header>
+        <form className="space-y-5 p-5 sm:p-6" onSubmit={submit}>
+          <div className="grid gap-3 rounded-2xl bg-sage-100 p-4 sm:grid-cols-3">
+            <div><p className="text-xs font-bold text-slate-500">Phương thức</p><p className="mt-1 font-black">{providerLabel(item)}</p></div>
+            <div><p className="text-xs font-bold text-slate-500">Trạng thái</p><div className="mt-1"><StatusBadge status={item.status} /></div></div>
+            <div><p className="text-xs font-bold text-slate-500">Phiên hoạt động</p><p className="mt-1 font-black">{item.active_session_count ?? 0}</p></div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label><span className="label">Tên hiển thị</span><input className="input" value={name} minLength={2} required onChange={(event) => setName(event.target.value)} /></label>
+            <label><span className="label">Email đăng nhập</span><input className="input" type="email" value={email} required onChange={(event) => setEmail(event.target.value)} /></label>
+          </div>
+          {emailChanged && <p className="flex items-start gap-2 rounded-2xl bg-amber-50 p-3 text-sm font-semibold text-amber-800"><CircleAlert className="mt-0.5 shrink-0" size={17} />Đổi email sẽ thu hồi toàn bộ phiên và refresh token. Người dùng phải đăng nhập lại bằng email mới; liên kết Google vẫn giữ riêng.</p>}
+          <label className="block"><span className="label">Lý do thao tác (ghi Audit Log)</span><textarea className="input min-h-24 resize-y" value={reason} minLength={3} required placeholder="Ví dụ: Người dùng yêu cầu cập nhật thông tin" onChange={(event) => setReason(event.target.value)} /></label>
+          {error && <p className="rounded-2xl bg-rose-50 p-3 text-sm font-bold text-rose-700" role="alert">{error.message}</p>}
+
+          <div className="flex flex-col gap-3 rounded-2xl border border-ink/10 p-4">
+            <div><h3 className="font-black">Mật khẩu và phiên đăng nhập</h3><p className="mt-1 text-xs leading-5 text-slate-500">Admin không xem hoặc nhập mật khẩu thay người dùng. Liên kết bảo mật được gửi tới email và chỉ dùng một lần.</p></div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <button type="button" className="btn-outline flex-1" disabled={busy || reason.trim().length < 3} onClick={() => {
+                if (window.confirm(`Gửi liên kết ${item.has_local_password === false ? "tạo" : "đặt lại"} mật khẩu tới ${item.email}?`)) onPasswordReset(reason.trim());
+              }}><KeyRound size={17} /> {item.has_local_password === false ? "Gửi liên kết tạo mật khẩu" : "Gửi liên kết đặt lại mật khẩu"}</button>
+              <button type="button" className="btn-secondary flex-1" disabled={busy || reason.trim().length < 3 || (item.active_session_count ?? 0) === 0 || item.role === "ADMIN"} onClick={() => {
+                if (window.confirm(`Đăng xuất ${item.name} khỏi mọi thiết bị ngay bây giờ?`)) onRevokeSessions(reason.trim());
+              }}><LockKeyhole size={17} /> Đăng xuất mọi thiết bị</button>
+            </div>
+          </div>
+
+          <div className="flex flex-col-reverse gap-2 border-t border-ink/10 pt-5 sm:flex-row sm:justify-end">
+            <button type="button" className="btn-outline" disabled={busy} onClick={onClose}>Hủy</button>
+            <button type="submit" className="btn-primary" disabled={busy || !canSubmit}><Edit3 size={17} /> Lưu thay đổi</button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 

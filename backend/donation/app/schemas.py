@@ -8,6 +8,12 @@ class DonationCreate(BaseModel):
     campaign_id: UUID
     amount: int = Field(ge=1_000, le=100_000_000_000)
     anonymous: bool = False
+    # Opt-in: chỉ hiện tên trên bảng "Tấm lòng vàng" khi người quyên góp chủ động đồng ý.
+    honor_consent: bool = False
+
+
+class DonationReject(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
 
 
 class DonationResponse(BaseModel):

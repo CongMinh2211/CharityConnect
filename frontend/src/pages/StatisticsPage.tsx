@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { BarChart3, CircleDollarSign, HandHeart, Landmark, RefreshCw, ShieldCheck, UsersRound } from "lucide-react";
-import { useState, type ComponentProps } from "react";
+import { ArrowDownLeft, ArrowUpRight, BarChart3, CircleDollarSign, Crown, FileDown, HandHeart, Landmark, Medal, RefreshCw, ShieldCheck, Trophy, UsersRound, Wallet } from "lucide-react";
+import { useState, type ComponentProps, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveContainer as RechartsResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useAuth } from "../auth/AuthContext";
-import { api, formatVnd } from "../lib/api";
-import type { AnalyticsPeriod, CampaignAnalytics, DonationAnalytics, UserAnalytics } from "../types";
+import { ApiError, api, downloadApi, formatVnd } from "../lib/api";
+import type { AnalyticsPeriod, CampaignAnalytics, DonationAnalytics, LedgerEntry, TopDonor, TopDonorsResponse, UserAnalytics } from "../types";
 
 const periods: Array<{ value: AnalyticsPeriod; label: string }> = [
   { value: "7d", label: "7 ngày" },
@@ -45,6 +46,8 @@ export function StatisticsPage(): JSX.Element {
   const users = useQuery({ queryKey: ["analytics-users-public"], queryFn: () => api<UserAnalytics>("/analytics/users/public") });
   const roleDonationPath = user?.role === "DONOR" ? "me" : user?.role === "ORGANIZATION" ? "organization" : user?.role === "ADMIN" ? "admin" : null;
   const roleDonations = useQuery({ queryKey: ["analytics-donations-role", roleDonationPath, period], queryFn: () => api<DonationAnalytics>(`/analytics/donations/${roleDonationPath}?period=${period}`), enabled: Boolean(roleDonationPath) });
+  const statement = useQuery({ queryKey: ["public-ledger-statement"], queryFn: () => api<{ items: LedgerEntry[] }>("/transparency/ledger?limit=12") });
+  const honor = useQuery({ queryKey: ["top-donors", period], queryFn: () => api<TopDonorsResponse>(`/analytics/donations/top-donors?period=${period}&limit=10`) });
 
   const loading = donations.isLoading || campaigns.isLoading || users.isLoading;
   const failed = donations.isError || campaigns.isError || users.isError;
@@ -169,6 +172,10 @@ export function StatisticsPage(): JSX.Element {
                 </table>
               </div>
             </article>
+
+            <FinancialStatement totals={totals} asOf={donations.data!.as_of} entries={statement.data?.items ?? []} />
+
+            <HonorBoard donors={honor.data?.donors ?? []} period={period} loading={honor.isLoading} />
           </>
         )}
 
@@ -218,5 +225,209 @@ function RoleMetric({ label, value }: { label: string; value: string }): JSX.Ele
       <p className="text-xs text-white/55">{label}</p>
       <p className="mt-1 break-words text-2xl font-black">{value}</p>
     </div>
+  );
+}
+
+const periodLabels: Record<AnalyticsPeriod, string> = { "7d": "7 ngày qua", "30d": "30 ngày qua", "90d": "90 ngày qua", all: "toàn thời gian" };
+
+function StatementCard({ label, value, tone, icon }: { label: string; value: number; tone: "balance" | "in" | "out"; icon: ReactNode }): JSX.Element {
+  const sign = tone === "out" ? "−" : "+";
+  const color = tone === "out" ? "text-rose-600" : "text-brand-700";
+  return (
+    <div className="rounded-2xl border border-ink/10 bg-white p-5">
+      <div className="flex items-center gap-2 text-slate-500">
+        <span className={`grid h-8 w-8 place-items-center rounded-xl ${tone === "out" ? "bg-rose-50 text-rose-600" : "bg-sage-100 text-brand-700"}`}>{icon}</span>
+        <p className="text-sm font-bold">{label}</p>
+      </div>
+      <p className={`mt-3 break-words text-2xl font-black tracking-tight sm:text-[1.75rem] ${color}`}>{sign}{formatVnd(value)}</p>
+    </div>
+  );
+}
+
+function MonthlyReconciliationDownload({ asOf }: { asOf: string }): JSX.Element {
+  const base = new Date(asOf);
+  const [year, setYear] = useState(base.getFullYear());
+  const [month, setMonth] = useState(base.getMonth() + 1);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const years = Array.from({ length: 3 }, (_, index) => base.getFullYear() - index);
+
+  async function download(): Promise<void> {
+    setBusy(true); setError(null);
+    try {
+      const blob = await downloadApi(`/transparency/reconciliation-report?year=${year}&month=${month}`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = `doi-soat-${year}-${String(month).padStart(2, "0")}.pdf`;
+      document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Không tải được báo cáo.");
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-ink/10 px-5 py-4 sm:px-8">
+      <span className="mr-1 text-sm font-bold text-slate-500">Xuất báo cáo đối soát tháng:</span>
+      <select aria-label="Tháng" className="input !min-h-10 !w-auto" value={month} onChange={(event) => setMonth(Number(event.target.value))}>
+        {Array.from({ length: 12 }, (_, index) => index + 1).map((value) => <option key={value} value={value}>Tháng {value}</option>)}
+      </select>
+      <select aria-label="Năm" className="input !min-h-10 !w-auto" value={year} onChange={(event) => setYear(Number(event.target.value))}>
+        {years.map((value) => <option key={value} value={value}>{value}</option>)}
+      </select>
+      <button className="btn-secondary !min-h-10" disabled={busy} onClick={() => void download()}><FileDown size={16} />{busy ? "Đang tạo…" : "Tải PDF"}</button>
+      {error && <span className="text-sm font-semibold text-rose-700">{error}</span>}
+    </div>
+  );
+}
+
+function FinancialStatement({ totals, asOf, entries }: { totals: DonationAnalytics["totals"]; asOf: string; entries: LedgerEntry[] }): JSX.Element {
+  return (
+    <section className="mt-10" aria-label="Sao kê tài chính minh bạch">
+      <article className="card overflow-hidden">
+        <header className="bg-ink px-5 py-6 text-white sm:px-8">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <span className="grid h-11 w-11 place-items-center rounded-2xl bg-brand-500 text-ink"><Wallet size={22} /></span>
+              <div>
+                <p className="text-xs font-extrabold uppercase tracking-[.18em] text-brand-500">Sao kê tài chính minh bạch</p>
+                <h2 className="mt-1 text-2xl font-black">Quỹ minh bạch CharityConnect</h2>
+              </div>
+            </div>
+            <div className="text-xs text-white/65 sm:text-right sm:text-sm">
+              <p>Nguồn chuẩn: Donation Service · Sổ cái TrustChain</p>
+              <p className="mt-0.5">Cập nhật {new Date(asOf).toLocaleString("vi-VN")}</p>
+            </div>
+          </div>
+          <dl className="mt-5 grid gap-3 rounded-2xl bg-white/5 p-4 text-sm sm:grid-cols-3">
+            <div>
+              <dt className="text-xs font-bold uppercase tracking-wide text-white/50">Số tài khoản</dt>
+              <dd className="mt-1 font-black tracking-wide">10000233598</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-bold uppercase tracking-wide text-white/50">Chủ tài khoản</dt>
+              <dd className="mt-1 font-black">TRẦN CÔNG MINH</dd>
+            </div>
+            <div>
+              <dt className="text-xs font-bold uppercase tracking-wide text-white/50">Ngân hàng</dt>
+              <dd className="mt-1 font-black">TPBank <span className="font-semibold text-white/60">(TMCP Tiên Phong)</span></dd>
+            </div>
+          </dl>
+        </header>
+
+        <div className="grid gap-3 p-5 sm:grid-cols-3 sm:p-8">
+          <StatementCard label="Số dư minh bạch" value={totals.transparent_balance} tone="balance" icon={<Wallet size={16} />} />
+          <StatementCard label="Tổng thu (quyên góp)" value={totals.donation_amount} tone="in" icon={<ArrowDownLeft size={16} />} />
+          <StatementCard label="Tổng chi (đã xác minh)" value={totals.verified_fund_usage} tone="out" icon={<ArrowUpRight size={16} />} />
+        </div>
+
+        <MonthlyReconciliationDownload asOf={asOf} />
+
+        <div className="border-t border-ink/10">
+          <div className="flex items-center justify-between gap-4 px-5 py-4 sm:px-8">
+            <h3 className="text-sm font-black uppercase tracking-wide text-slate-500">Giao dịch gần đây</h3>
+            <Link className="text-sm font-bold text-brand-800 hover:underline" to="/minh-bach">Xem toàn bộ sổ cái</Link>
+          </div>
+          {entries.length ? (
+            <ul className="divide-y divide-ink/10">
+              {entries.map((entry) => {
+                const income = entry.event_type === "DONATION_COMPLETED";
+                const amount = Number(entry.public_payload.amount ?? entry.public_payload.amount_used ?? 0);
+                const title = String(entry.public_payload.campaign_title ?? "Chiến dịch");
+                const receiptNumber = entry.public_payload.receipt_number ? String(entry.public_payload.receipt_number) : null;
+                return (
+                  <li className="flex items-center justify-between gap-4 px-5 py-4 sm:px-8" key={entry.entry_hash}>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl ${income ? "bg-sage-100 text-brand-700" : "bg-rose-50 text-rose-600"}`}>
+                        {income ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate font-bold text-ink">{income ? "Quyên góp hoàn tất" : "Giải ngân đã duyệt"}</p>
+                        <p className="truncate text-sm text-slate-500">{title} · {new Date(entry.created_at).toLocaleDateString("vi-VN")}</p>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3">
+                      {receiptNumber && <Link className="hidden text-xs font-bold text-brand-800 hover:underline sm:inline" to={`/doi-soat?receipt=${encodeURIComponent(receiptNumber)}`}>Đối soát</Link>}
+                      <p className={`font-black ${income ? "text-brand-700" : "text-rose-600"}`}>{income ? "+" : "−"}{formatVnd(amount)}</p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="px-5 py-8 text-center text-sm text-slate-500 sm:px-8">Chưa có giao dịch nào trên sổ cái.</p>
+          )}
+        </div>
+      </article>
+    </section>
+  );
+}
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return ((parts.at(-2)?.[0] ?? "") + (parts.at(-1)?.[0] ?? name[0] ?? "?")).toUpperCase();
+}
+
+function DonorAvatar({ donor, size = "md" }: { donor: TopDonor; size?: "md" | "lg" }): JSX.Element {
+  const dimension = size === "lg" ? "h-16 w-16 text-xl" : "h-11 w-11 text-sm";
+  if (donor.anonymous) {
+    return <span className={`grid ${dimension} shrink-0 place-items-center rounded-full bg-slate-200 font-black text-slate-500`}><HandHeart size={size === "lg" ? 26 : 18} /></span>;
+  }
+  return <span className={`grid ${dimension} shrink-0 place-items-center rounded-full bg-brand-100 font-black text-brand-800`}>{initialsOf(donor.display_name)}</span>;
+}
+
+const podiumStyles = [
+  { ring: "ring-amber-300", badge: "bg-amber-400 text-amber-950", icon: <Crown size={16} />, label: "Quán quân" },
+  { ring: "ring-slate-300", badge: "bg-slate-300 text-slate-800", icon: <Medal size={16} />, label: "Á quân" },
+  { ring: "ring-orange-300", badge: "bg-orange-300 text-orange-950", icon: <Medal size={16} />, label: "Hạng ba" },
+];
+
+function HonorBoard({ donors, period, loading }: { donors: TopDonor[]; period: AnalyticsPeriod; loading: boolean }): JSX.Element {
+  const podium = donors.slice(0, 3);
+  const rest = donors.slice(3);
+  return (
+    <section className="mt-10" aria-label="Vinh danh nhà hảo tâm">
+      <div className="flex items-center gap-3">
+        <span className="grid h-11 w-11 place-items-center rounded-2xl bg-amber-100 text-amber-600"><Trophy size={22} /></span>
+        <div>
+          <h2 className="text-2xl font-black tracking-tight text-ink">Vinh danh · Tấm lòng vàng</h2>
+          <p className="text-sm text-slate-500">Xếp hạng theo tổng số tiền quyên góp · {periodLabels[period]}</p>
+        </div>
+      </div>
+
+      {loading && <p className="mt-6 flex items-center gap-2 text-sm font-semibold text-slate-500"><RefreshCw className="animate-spin" size={16} /> Đang tổng hợp…</p>}
+      {!loading && donors.length === 0 && <p className="mt-6 rounded-2xl bg-sage-100 p-5 text-sm text-slate-500">Chưa có lượt quyên góp nào trong khoảng thời gian này.</p>}
+
+      {podium.length > 0 && (
+        <div className="mt-6 grid gap-3 sm:grid-cols-3">
+          {podium.map((donor, index) => (
+            <article key={donor.rank} className={`card flex flex-col items-center p-6 text-center ring-2 ${podiumStyles[index].ring}`}>
+              <span className={`mb-3 inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-black ${podiumStyles[index].badge}`}>{podiumStyles[index].icon}{podiumStyles[index].label}</span>
+              <DonorAvatar donor={donor} size="lg" />
+              <p className="mt-3 line-clamp-1 font-black text-ink">{donor.display_name}</p>
+              <p className="mt-1 text-xl font-black text-brand-700">{formatVnd(donor.total_amount)}</p>
+              <p className="mt-1 text-xs text-slate-500">{donor.donation_count.toLocaleString("vi-VN")} lượt đóng góp</p>
+            </article>
+          ))}
+        </div>
+      )}
+
+      {rest.length > 0 && (
+        <ul className="card mt-3 divide-y divide-ink/10 overflow-hidden">
+          {rest.map((donor) => (
+            <li className="flex items-center justify-between gap-4 px-5 py-3.5" key={donor.rank}>
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-sage-100 text-sm font-black text-slate-500">{donor.rank}</span>
+                <DonorAvatar donor={donor} />
+                <p className="truncate font-bold text-ink">{donor.display_name}</p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="font-black text-brand-700">{formatVnd(donor.total_amount)}</p>
+                <p className="text-xs text-slate-500">{donor.donation_count.toLocaleString("vi-VN")} lượt</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }

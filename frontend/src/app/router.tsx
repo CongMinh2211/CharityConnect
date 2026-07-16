@@ -20,6 +20,9 @@ const OrganizationPage = lazy(() => import("../features/organization/Organizatio
 const AdminPage = lazy(() => import("../features/admin/AdminPage").then((module) => ({ default: module.AdminPage })));
 const TransparencyPage = lazy(() => import("../features/transparency/TransparencyPage").then((module) => ({ default: module.TransparencyPage })));
 const ReceiptVerificationPage = lazy(() => import("../features/transparency/ReceiptVerificationPage").then((module) => ({ default: module.ReceiptVerificationPage })));
+const ReconciliationPage = lazy(() => import("../features/transparency/ReconciliationPage").then((module) => ({ default: module.ReconciliationPage })));
+const OrganizationVerificationPage = lazy(() => import("../features/transparency/OrganizationVerificationPage").then((module) => ({ default: module.OrganizationVerificationPage })));
+const ReportPage = lazy(() => import("../features/transparency/ReportPage").then((module) => ({ default: module.ReportPage })));
 const StatisticsPage = lazy(() => import("../features/analytics/StatisticsPage").then((module) => ({ default: module.StatisticsPage })));
 const FavoritesPage = lazy(() => import("../features/engagement/FavoritesPage").then((module) => ({ default: module.FavoritesPage })));
 const NotificationsPage = lazy(() => import("../features/notifications/NotificationsPage").then((module) => ({ default: module.NotificationsPage })));
@@ -56,6 +59,9 @@ export const router = createBrowserRouter([
       { path: "chien-dich/:id", element: <CampaignDetailPage /> },
       { path: "minh-bach", element: <TransparencyPage /> },
       { path: "thong-ke", element: <StatisticsPage /> },
+      { path: "doi-soat", element: <ReconciliationPage /> },
+      { path: "ho-so-to-chuc/:id", element: <OrganizationVerificationPage /> },
+      { path: "bao-cao", element: <ReportPage /> },
       { path: "xac-minh-bien-nhan", element: <ReceiptVerificationPage /> },
       { path: "dang-nhap", element: <LoginPage /> },
       { path: "dang-ky", element: <RegisterPage /> },

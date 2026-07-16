@@ -42,6 +42,14 @@ export function AccountPage(): JSX.Element {
       void queryClient.invalidateQueries({ queryKey: ["sessions"] });
     },
   });
+  const setPasswordMutation = useMutation({
+    mutationFn: (payload: { new_password: string }) => api<{ message: string; user?: User }>("/auth/set-password", { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess(data) {
+      if (data.user) updateUser(data.user);
+      setSecurityMessage(data.message ?? "Đã tạo mật khẩu CharityConnect.");
+      void queryClient.invalidateQueries({ queryKey: ["profile"] });
+    },
+  });
 
   const revokeSession = useMutation({
     mutationFn: (sessionId: string) => api<{ message: string }>(`/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
@@ -85,7 +93,7 @@ export function AccountPage(): JSX.Element {
 
         <section className="rounded-3xl border border-ink/10 bg-white p-5 shadow-sm sm:p-6">
           {tab === "profile" && <ProfileTab user={activeUser} message={profileMessage} loading={profileMutation.isPending} error={profileMutation.error as Error | null} onSubmit={(profile) => profileMutation.mutate(profile)} />}
-          {tab === "security" && <SecurityTab message={securityMessage} loading={passwordMutation.isPending} error={passwordMutation.error as Error | null} onSubmit={(payload) => passwordMutation.mutate(payload)} />}
+          {tab === "security" && <SecurityTab user={activeUser} message={securityMessage} loading={passwordMutation.isPending || setPasswordMutation.isPending} error={(passwordMutation.error ?? setPasswordMutation.error) as Error | null} onSubmit={(payload) => passwordMutation.mutate(payload)} onSetPassword={(newPassword) => setPasswordMutation.mutate({ new_password: newPassword })} />}
           {tab === "sessions" && <SessionsTab sessions={sessions.data ?? []} loading={sessions.isLoading} error={sessions.error as Error | null} revokeLoading={revokeSession.isPending || revokeAll.isPending} onRevoke={(id) => revokeSession.mutate(id)} onRevokeAll={() => revokeAll.mutate()} />}
           {tab === "audit" && <AuditTab logs={audit.data ?? []} loading={audit.isLoading} error={audit.error as Error | null} />}
         </section>
@@ -127,23 +135,32 @@ function ProfileTab({ user, message, loading, error, onSubmit }: { user: User | 
   );
 }
 
-function SecurityTab({ message, loading, error, onSubmit }: { message: string; loading: boolean; error: Error | null; onSubmit: (payload: { current_password: string; new_password: string }) => void }): JSX.Element {
+function SecurityTab({ user, message, loading, error, onSubmit, onSetPassword }: {
+  user: User | null | undefined;
+  message: string;
+  loading: boolean;
+  error: Error | null;
+  onSubmit: (payload: { current_password: string; new_password: string }) => void;
+  onSetPassword: (newPassword: string) => void;
+}): JSX.Element {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const needsLocalPassword = user?.has_local_password === false;
   const mismatch = confirm.length > 0 && confirm !== newPassword;
   function submit(event: FormEvent): void {
     event.preventDefault();
     if (mismatch) return;
-    onSubmit({ current_password: currentPassword, new_password: newPassword });
+    if (needsLocalPassword) onSetPassword(newPassword);
+    else onSubmit({ current_password: currentPassword, new_password: newPassword });
     setCurrentPassword(""); setNewPassword(""); setConfirm("");
   }
   return (
     <form onSubmit={submit} className="max-w-2xl">
       <h2 className="text-2xl font-black">Bảo mật</h2>
-      <p className="mt-2 text-sm text-slate-500">Đổi mật khẩu sẽ thu hồi các phiên đăng nhập khác. Mật khẩu nên tối thiểu 8 ký tự.</p>
-      <label className="mt-6 block text-sm font-black">Mật khẩu hiện tại</label>
-      <input className="input mt-2" type="password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+      <p className="mt-2 text-sm text-slate-500">{needsLocalPassword ? "Tài khoản Google chưa có mật khẩu CharityConnect. Tạo mật khẩu riêng để có thể đăng nhập bằng email khi cần." : "Đổi mật khẩu sẽ thu hồi các phiên đăng nhập khác. Mật khẩu nên tối thiểu 8 ký tự."}</p>
+      {user?.google_connected && <p className="mt-4 rounded-2xl bg-blue-50 px-4 py-3 text-sm font-bold text-blue-800">Google đã liên kết · CharityConnect không nhận và không lưu mật khẩu Google.</p>}
+      {!needsLocalPassword && <><label className="mt-6 block text-sm font-black">Mật khẩu hiện tại</label><input className="input mt-2" type="password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></>}
       <label className="mt-4 block text-sm font-black">Mật khẩu mới</label>
       <input className="input mt-2" type="password" minLength={8} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
       <label className="mt-4 block text-sm font-black">Nhập lại mật khẩu mới</label>
@@ -151,7 +168,7 @@ function SecurityTab({ message, loading, error, onSubmit }: { message: string; l
       {mismatch && <p className="mt-3 text-sm font-bold text-rose-600">Mật khẩu nhập lại chưa khớp.</p>}
       {message && <p className="mt-4 rounded-2xl bg-brand-50 px-4 py-3 text-sm font-bold text-brand-800">{message}</p>}
       {error && <p className="mt-4 rounded-2xl bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{error.message}</p>}
-      <button className="btn-primary mt-6" disabled={loading || mismatch}><KeyRound size={18} /> Đổi mật khẩu</button>
+      <button className="btn-primary mt-6" disabled={loading || mismatch || newPassword.length < 8 || confirm !== newPassword}><KeyRound size={18} /> {needsLocalPassword ? "Tạo mật khẩu CharityConnect" : "Đổi mật khẩu"}</button>
     </form>
   );
 }

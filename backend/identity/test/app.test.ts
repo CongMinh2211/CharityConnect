@@ -32,6 +32,45 @@ describe("identity HTTP API", () => {
     expect(response.body.totals).toEqual({ donor_count: 12, verified_organization_count: 3 });
   });
 
+  it("exposes a public organization verification dossier", async () => {
+    queryMock
+      .mockResolvedValueOnce([{
+        user_id: "org-1", legal_name: "Quỹ Mầm Xanh", registration_number: "QXH-001", description: "Hỗ trợ trẻ em",
+        status: "VERIFIED", submitted_at: "2026-01-01T00:00:00.000Z", reviewed_at: "2026-01-05T00:00:00.000Z",
+        verification_expires_at: "2099-01-05T00:00:00.000Z", document_path: "/uploads/x.pdf",
+      }] as never)
+      .mockResolvedValueOnce([
+        { action: "ORGANIZATION_SUBMITTED", created_at: "2026-01-01T00:00:00.000Z", reason: null },
+        { action: "ORGANIZATION_VERIFIED", created_at: "2026-01-05T00:00:00.000Z", reason: null },
+      ] as never);
+    const response = await request(app).get("/organizations/org-1/verification");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      status: "VERIFIED", verified_at: "2026-01-05T00:00:00.000Z",
+      expires_at: "2099-01-05T00:00:00.000Z", verification_valid: true, has_document: true,
+    });
+    expect(response.body.history).toHaveLength(2);
+  });
+
+  it("returns 404 for an unknown organization dossier", async () => {
+    queryMock.mockResolvedValueOnce([] as never);
+    expect((await request(app).get("/organizations/none/verification")).status).toBe(404);
+  });
+
+  it("marks an expired organization verification as no longer valid", async () => {
+    queryMock
+      .mockResolvedValueOnce([{
+        user_id: "org-expired", legal_name: "Quỹ cũ", registration_number: "OLD-001", description: "Hồ sơ đã hết hạn",
+        status: "VERIFIED", submitted_at: "2024-01-01T00:00:00.000Z", reviewed_at: "2024-01-05T00:00:00.000Z",
+        verification_expires_at: "2025-01-05T00:00:00.000Z", document_path: null,
+      }] as never)
+      .mockResolvedValueOnce([] as never);
+
+    const response = await request(app).get("/organizations/org-expired/verification");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: "VERIFIED", verification_valid: false, has_document: false });
+  });
+
   it("registers a donor and returns a JWT", async () => {
     queryMock.mockResolvedValueOnce([{ id: "u1", email: "new@test.vn", name: "New", role: "DONOR" }] as never);
     const response = await request(app).post("/auth/register").send({ email: "new@test.vn", password: "Password@123", name: "New", phone: "0901234567", province: "Đà Nẵng", address: "12 Hải Châu", date_of_birth: "2001-01-20", role: "DONOR", terms_accepted: true });
@@ -145,6 +184,24 @@ describe("identity HTTP API", () => {
     expect((await request(app).post("/auth/change-password").set("Authorization", `Bearer ${donorToken}`).send({ current_password: "wrong", new_password: "New@123456" })).status).toBe(401);
   });
 
+  it("lets a Google-only account create a local password without storing plaintext", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ password_hash: null, google_connected: true }] as never)
+      .mockResolvedValueOnce([{ id: "00000000-0000-0000-0000-000000000001" }] as never);
+    const response = await request(app)
+      .post("/auth/set-password")
+      .set("Authorization", `Bearer ${donorToken}`)
+      .send({ new_password: "Local@123456" });
+    expect(response.status).toBe(201);
+    const storedValues = queryMock.mock.calls[1][1] as unknown[];
+    expect(storedValues).not.toContain("Local@123456");
+    expect(String(storedValues[0])).toMatch(/^\$2[aby]\$/);
+    expect(queryMock.mock.calls[1][0]).toContain("LOCAL_PASSWORD_CREATED");
+
+    queryMock.mockResolvedValueOnce([{ password_hash: "hash", google_connected: true }] as never);
+    expect((await request(app).post("/auth/set-password").set("Authorization", `Bearer ${donorToken}`).send({ new_password: "Other@123456" })).status).toBe(409);
+  });
+
   it("queues and confirms password resets without leaking account existence", async () => {
     queryMock
       .mockResolvedValueOnce([{ id: "00000000-0000-0000-0000-000000000001", email: "donor@test.vn", name: "Donor" }] as never)
@@ -197,17 +254,62 @@ describe("identity HTTP API", () => {
     expect(users.body[0].email).toBe("donor@test.vn");
     expect(users.headers["x-total-count"]).toBe("1");
 
-    queryMock
-      .mockResolvedValueOnce([{ id: "u1", email: "donor@test.vn", name: "Donor", role: "DONOR", status: "ACTIVE" }] as never)
-      .mockResolvedValueOnce([{ id: "u1", email: "donor@test.vn", name: "Donor", role: "DONOR", status: "DISABLED" }] as never)
-      .mockResolvedValueOnce([] as never);
+    queryMock.mockResolvedValueOnce([{
+      id: "u1", email: "donor@test.vn", name: "Donor", role: "DONOR", status: "DISABLED",
+      revoked_session_count: 2, revoked_refresh_token_count: 2,
+    }] as never);
     const disabled = await request(app).patch("/admin/users/u1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "DISABLED", reason: "Vi phạm điều khoản" });
     expect(disabled.status).toBe(200);
     expect(disabled.body.status).toBe("DISABLED");
+    expect(disabled.body.revoked_session_count).toBe(2);
+    expect(queryMock.mock.calls.at(-1)?.[0]).toContain("UPDATE account_sessions");
+    expect(queryMock.mock.calls.at(-1)?.[0]).toContain("UPDATE refresh_tokens");
 
     expect((await request(app).patch("/admin/users/00000000-0000-0000-0000-000000000003/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "DISABLED", reason: "test" })).status).toBe(409);
     queryMock.mockResolvedValueOnce([] as never);
     expect((await request(app).patch("/admin/users/missing/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "ACTIVE" })).status).toBe(404);
+  });
+
+  it("lets admin edit login identity, queue a safe password reset and revoke every session", async () => {
+    queryMock.mockResolvedValueOnce([{
+      id: "u-google", email: "new@gmail.com", name: "Tên mới", role: "DONOR", status: "ACTIVE",
+      google_connected: true, has_local_password: false, auth_provider: "GOOGLE",
+      revoked_session_count: 1, revoked_refresh_token_count: 1,
+    }] as never);
+    const edited = await request(app).patch("/admin/users/u-google/profile")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ name: "Tên mới", email: "NEW@GMAIL.COM", reason: "Người dùng yêu cầu hiệu chỉnh" });
+    expect(edited.status).toBe(200);
+    expect(edited.body).toMatchObject({ email: "new@gmail.com", auth_provider: "GOOGLE", revoked_session_count: 1 });
+    expect(queryMock.mock.calls.at(-1)?.[0]).toContain("USER_PROFILE_UPDATED_BY_ADMIN");
+
+    queryMock.mockResolvedValueOnce([{
+      id: "u-google", email: "new@gmail.com", name: "Tên mới", role: "DONOR", status: "ACTIVE",
+      google_connected: true, has_local_password: false,
+    }] as never);
+    const reset = await request(app).post("/admin/users/u-google/password-reset")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "Hỗ trợ người dùng tạo mật khẩu cục bộ" });
+    expect(reset.status).toBe(202);
+    expect(reset.body).toMatchObject({ delivery: "QUEUED", password_setup_required: true });
+    expect(reset.body).not.toHaveProperty("token");
+    expect(reset.body).not.toHaveProperty("password");
+
+    queryMock.mockResolvedValueOnce([{ id: "u-google", revoked_session_count: 3, revoked_refresh_token_count: 2 }] as never);
+    const revoked = await request(app).post("/admin/users/u-google/revoke-sessions")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ reason: "Phát hiện phiên đăng nhập bất thường" });
+    expect(revoked.status).toBe(200);
+    expect(revoked.body).toMatchObject({ revoked_session_count: 3, revoked_refresh_token_count: 2 });
+    expect(queryMock.mock.calls.at(-1)?.[0]).toContain("ADMIN_SESSIONS_REVOKED");
+  });
+
+  it("maps a duplicate admin email update to conflict", async () => {
+    queryMock.mockRejectedValueOnce({ code: "23505" });
+    const response = await request(app).patch("/admin/users/u1/profile")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ email: "existing@test.vn", reason: "Hiệu chỉnh email" });
+    expect(response.status).toBe(409);
   });
 
   it("covers admin analytics, disabled login, preferences and notifications", async () => {
@@ -277,6 +379,11 @@ describe("identity HTTP API", () => {
     const response = await request(app).get("/internal/organizations/org/status").set("x-internal-token", "local-internal-token");
     expect(response.status).toBe(200);
     expect(response.body.status).toBe("VERIFIED");
+
+    queryMock.mockResolvedValueOnce([{ status: "EXPIRED", legal_name: "Quỹ", verification_expires_at: "2025-01-01T00:00:00.000Z" }] as never);
+    const expired = await request(app).get("/internal/organizations/org-expired/status").set("x-internal-token", "local-internal-token");
+    expect(expired.status).toBe(200);
+    expect(expired.body.status).toBe("EXPIRED");
   });
 
   it("maps unique violations and unexpected errors", async () => {

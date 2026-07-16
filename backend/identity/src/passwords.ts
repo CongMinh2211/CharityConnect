@@ -23,7 +23,10 @@ export async function isPasswordReused(userId: string, newPassword: string): Pro
 export async function updatePasswordWithHistory(userId: string, newHash: string): Promise<void> {
   await query(
     `WITH old AS (SELECT password_hash FROM users WHERE id=$1),
-     archived AS (INSERT INTO password_history(user_id,password_hash) SELECT $1,password_hash FROM old)
+     archived AS (
+       INSERT INTO password_history(user_id,password_hash)
+       SELECT $1,password_hash FROM old WHERE password_hash IS NOT NULL
+     )
      UPDATE users SET password_hash=$2,updated_at=now() WHERE id=$1`,
     [userId, newHash],
   );

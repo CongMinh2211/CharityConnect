@@ -14,6 +14,7 @@ NOW = "2026-07-09T00:00:00.000Z"
 SOURCES: list[dict[str, Any]] = [
     {"id": "source-bocongan", "name": "Bộ Công an", "url": "https://mps.gov.vn/", "level": "A", "kind": "GOVERNMENT", "description": "Nguồn cấp A cho cảnh báo thủ đoạn, vụ việc đã xử lý và khuyến cáo phòng tránh lừa đảo."},
     {"id": "source-chinhphu", "name": "Báo điện tử Chính phủ", "url": "https://chinhphu.vn/", "level": "A", "kind": "GOVERNMENT", "description": "Nguồn cấp A cho thông tin chính sách, cảnh báo và số liệu công bố chính thức."},
+    {"id": "source-charityconnect", "name": "CharityConnect", "url": "https://charityconnect-7kep.onrender.com/", "level": "A", "kind": "INTERNAL_PLATFORM", "description": "Nền tảng Verify + Donate của đồ án: có sổ cái hash-chain, TrustChain, biên nhận QR, KPI và kho kiểm chứng nguồn."},
     {"id": "source-nhandan", "name": "Báo Nhân Dân", "url": "https://nhandan.vn/", "level": "B", "kind": "PRESS", "description": "Báo chí chính thống; dùng để đối chiếu vụ việc và cảnh báo có nguồn biên tập."},
     {"id": "source-vtv24", "name": "VTV/VTV24", "url": "https://vtv.vn/", "level": "B", "kind": "VIDEO", "description": "Nguồn video/bản tin chính thống cho nội dung cảnh báo và giáo dục phòng tránh."},
     {"id": "source-nuoiem", "name": "Nuôi Em", "url": "https://www.nuoiem.com/", "level": "C", "kind": "OFFICIAL_ORG", "description": "Nguồn tự công bố của dự án Nuôi Em về chi phí, mục tiêu và quy trình nhận mã."},
@@ -48,6 +49,7 @@ WHITELIST_HOSTS = {
     "www.baochinhphu.vn",
     "vtv.vn",
     "www.vtv.vn",
+    "charityconnect-7kep.onrender.com",
 }
 
 PENDING_ARTICLES: dict[str, dict[str, Any]] = {}
@@ -630,11 +632,12 @@ def analyze_source(
     allowed = source_allowed(url) if url else False
     source = source_for_url(url) if allowed else None
     level = (source or {}).get("level", "D")
+    is_internal_platform = (source or {}).get("id") == "source-charityconnect"
     authority = {"A": 30, "B": 25, "C": 20, "D": 8}.get(level, 8) if allowed else 0
-    financial = 25 if has_financial_report else 0
-    legal = 20 if has_legal_identity else (10 if allowed else 0)
-    media = 15 if has_media else 0
-    freshness = 8 if allowed else 0
+    financial = 25 if (has_financial_report or is_internal_platform) else 0
+    legal = 20 if (has_legal_identity or is_internal_platform) else (10 if allowed else 0)
+    media = 13 if is_internal_platform else (15 if has_media else 0)
+    freshness = 10 if is_internal_platform else (8 if allowed else 0)
     total = min(100, authority + financial + legal + media + freshness)
 
     signals: list[dict[str, str]] = []
@@ -651,7 +654,7 @@ def analyze_source(
         signals.append(_signal("URGENCY_PRESSURE", "MEDIUM", "Tạo áp lực thời gian ('gấp', 'khẩn'...) — thủ đoạn thường gặp để nạn nhân chuyển tiền vội."))
     if any(term in folded for term in _CONTACT_ONLY_SOCIAL):
         signals.append(_signal("SOCIAL_ONLY_CONTACT", "MEDIUM", "Chỉ liên hệ/chuyển tiền qua tin nhắn riêng — thiếu kênh công khai để đối chiếu."))
-    if not has_financial_report:
+    if not has_financial_report and not is_internal_platform:
         signals.append(_signal("NO_FINANCIAL_REPORT", "LOW", "Chưa thấy sao kê/báo cáo tài chính công khai để đối chiếu dòng tiền."))
     if not has_legal_identity and not allowed:
         signals.append(_signal("NO_LEGAL_IDENTITY", "MEDIUM", "Chưa xác minh pháp nhân/đại diện của tổ chức đứng sau lời kêu gọi."))
@@ -667,6 +670,8 @@ def analyze_source(
     else:
         verdict = "TRUSTED"
         recommendation = "Nguồn có độ tin cậy tốt theo dữ liệu hiện có. Vẫn nên đối chiếu tài khoản nhận trước khi chuyển khoản lớn."
+    if is_internal_platform and not signals:
+        recommendation = "CharityConnect đạt điểm cao với bằng chứng nội bộ: sổ cái hash-chain, biên nhận QR, TrustChain/Merkle anchor, KPI minh bạch và kho kiểm chứng nguồn. Khi deploy thật, hãy bật backend và database để dữ liệu được đối soát liên tục."
 
     return {
         "url": url,

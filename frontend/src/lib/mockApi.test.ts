@@ -49,11 +49,17 @@ describe("mock API demo flows", () => {
   it("creates a local profile after Google account selection", async () => {
     const credential = googleCredential({
       sub: "google-test-subject", email: "google.user@gmail.com", name: "Google User", email_verified: true,
+      aud: import.meta.env.VITE_GOOGLE_CLIENT_ID,
       exp: Math.floor(Date.now() / 1000) + 600,
     });
     const result = await mockApi<AuthPayload>("/auth/google", { method: "POST", body: JSON.stringify({ credential, terms_accepted: true, role: "DONOR" }) });
-    expect(result.user).toMatchObject({ email: "google.user@gmail.com", name: "Google User", role: "DONOR" });
+    expect(result.user).toMatchObject({ email: "google.user@gmail.com", name: "Google User", role: "DONOR", auth_provider: "GOOGLE", has_local_password: false, google_connected: true });
     expect(result.token).toContain("google-local-token");
+    actAs(result.user);
+    await expect(mockApi("/auth/login", { method: "POST", body: JSON.stringify({ email: result.user.email, password: "unknown" }) })).rejects.toThrow();
+    const localPassword = await mockApi<{ user: User }>("/auth/set-password", { method: "POST", body: JSON.stringify({ new_password: "Google@123" }) });
+    expect(localPassword.user.auth_provider).toBe("GOOGLE_AND_PASSWORD");
+    expect((await mockApi<AuthPayload>("/auth/login", { method: "POST", body: JSON.stringify({ email: result.user.email, password: "Google@123" }) })).user.email).toBe(result.user.email);
   });
 
   it("answers assistant questions without an API key", async () => {
@@ -91,6 +97,17 @@ describe("mock API demo flows", () => {
       expect(result.answer).toContain(item.expected);
       if (item.action) expect(result.actions.some((action) => action.path === item.action)).toBe(true);
     }
+  });
+
+  it("scores the deployed CharityConnect URL as a trusted internal platform", async () => {
+    const result = await mockApi<{ score: { total: number; grade: string }; verdict: string; signals: unknown[]; source_name: string | null }>("/assistant/analyze-source", {
+      method: "POST",
+      body: JSON.stringify({ url: "https://charityconnect-7kep.onrender.com/" }),
+    });
+    expect(result.source_name).toBe("CharityConnect");
+    expect(result.score).toMatchObject({ total: 98, grade: "A" });
+    expect(result.verdict).toBe("TRUSTED");
+    expect(result.signals).toHaveLength(0);
   });
 
   it("answers external weather with public sources in static mode", async () => {
@@ -151,16 +168,33 @@ describe("mock API demo flows", () => {
     const key = storage.key(0)!;
     const stale = JSON.parse(storage.getItem(key)!) as Record<string, unknown>;
     delete stale.ledger;
+    const staleCampaign = (stale.campaigns as Campaign[]).find((item) => item.id === "campaign-school")!;
+    staleCampaign.raised_amount = 1;
+    const staleEscrow = (stale.escrows as CampaignEscrow[]).find((item) => item.campaign_id === "campaign-school")!;
+    staleEscrow.total_donated = 1;
+    staleEscrow.locked_amount = 1;
     storage.setItem(key, JSON.stringify(stale));
     const campaigns = await mockApi<Campaign[]>("/campaigns");
     expect(campaigns).toHaveLength(4);
+    const repaired = campaigns.find((item) => item.id === "campaign-school")!;
+    const stored = JSON.parse(storage.getItem(key)!) as { donations: Array<Donation & { donor_id: string }> };
+    const expectedRaised = stored.donations.filter((item) => item.campaign_id === repaired.id && item.status === "COMPLETED").reduce((sum, item) => sum + item.amount, 0);
+    expect(repaired.raised_amount).toBe(expectedRaised);
+    expect((await mockApi<CampaignEscrow>(`/campaigns/${repaired.id}/contract`)).total_donated).toBe(expectedRaised);
     expect((await mockApi<LedgerVerification>("/transparency/verify")).valid).toBe(true);
   });
 
   it("creates a donation, receipt and updated history", async () => {
     actAs({ id: "donor-demo", name: "Nguyễn Minh An", email: "donor@demo.vn", role: "DONOR" });
-    const donation = await mockApi<Donation>("/donations", { method: "POST", body: JSON.stringify({ campaign_id: "campaign-school", amount: 200_000, anonymous: true }) });
+    const before = await mockApi<Campaign>("/campaigns/campaign-school");
+    const amount = 1_000_000;
+    const donation = await mockApi<Donation>("/donations", { method: "POST", body: JSON.stringify({ campaign_id: "campaign-school", amount, anonymous: true }) });
     expect(donation.status).toBe("COMPLETED");
+    const after = await mockApi<Campaign>("/campaigns/campaign-school");
+    expect(after.raised_amount).toBe(before.raised_amount + amount);
+    expect(after.status).toBe("APPROVED");
+    const escrowAfterDonation = await mockApi<CampaignEscrow>("/campaigns/campaign-school/contract");
+    expect(escrowAfterDonation.total_donated).toBe(after.raised_amount);
     const receipt = await mockApi<Donation>(`/donations/${donation.id}/receipt`);
     expect(receipt.receipt_number).toMatch(/^CC-/);
     const history = await mockApi<Donation[]>("/donations/history");
@@ -192,6 +226,101 @@ describe("mock API demo flows", () => {
     const organizationDonations = await mockApi<Array<Donation & { donor_name: string }>>("/organization/donations/campaign-school");
     expect(organizationDonations.some((item) => item.id === donation.id)).toBe(true);
     expect(organizationDonations.find((item) => item.id === donation.id)?.donor_name).not.toContain("Minh");
+  });
+
+  it("holds a large donation until an admin approves it", async () => {
+    actAs({ id: "donor-demo", name: "Nguyen Minh An", email: "donor@demo.vn", role: "DONOR" });
+    const before = await mockApi<Campaign>("/campaigns/campaign-school");
+    const chainBefore = await mockApi<LedgerVerification>("/transparency/verify");
+    const pending = await mockApi<Donation>("/donations", { method: "POST", body: JSON.stringify({ campaign_id: before.id, amount: 1_000_000_000, anonymous: false }) });
+    expect(pending.status).toBe("PENDING_REVIEW");
+    expect(pending.proof_status).toBe("PENDING_REVIEW");
+    expect((await mockApi<Campaign>(`/campaigns/${before.id}`)).raised_amount).toBe(before.raised_amount);
+    expect((await mockApi<LedgerVerification>("/transparency/verify")).entries).toBe(chainBefore.entries);
+
+    actAs({ id: "admin-demo", name: "Admin", email: "admin@demo.vn", role: "ADMIN" });
+    const queue = await mockApi<Array<{ id: string; status: string }>>("/admin/donations/pending");
+    expect(queue.some((item) => item.id === pending.id)).toBe(true);
+    const approved = await mockApi<Donation>(`/admin/donations/${pending.id}/approve`, { method: "POST" });
+    expect(approved.status).toBe("COMPLETED");
+    const after = await mockApi<Campaign>(`/campaigns/${before.id}`);
+    expect(after.raised_amount).toBe(before.raised_amount + pending.amount);
+    expect(after.raised_amount).toBeGreaterThan(after.goal_amount);
+    expect((await mockApi<LedgerVerification>("/transparency/verify")).entries).toBe(chainBefore.entries + 1);
+    await expect(mockApi(`/admin/donations/${pending.id}/approve`, { method: "POST" })).rejects.toThrow();
+  });
+
+  it("connects donor engagement, public reports, reconciliation and admin review", async () => {
+    actAs({ id: "donor-demo", name: "Nguyen Minh An", email: "donor@demo.vn", role: "DONOR" });
+    const saved = await mockApi<Array<{ campaign_id: string }>>("/me/campaign-preferences");
+    expect(saved.some((item) => item.campaign_id === "campaign-school")).toBe(true);
+    expect(await mockApi<{ saved: boolean; following: boolean }>("/me/campaign-preferences/campaign-water")).toMatchObject({ saved: false, following: false });
+    await mockApi("/me/campaign-preferences/campaign-water", { method: "PUT", body: JSON.stringify({ saved: true, following: true }) });
+    expect(await mockApi<{ saved: boolean; following: boolean }>("/me/campaign-preferences/campaign-water")).toMatchObject({ saved: true, following: true });
+    await mockApi("/me/campaign-preferences/campaign-water", { method: "PUT", body: JSON.stringify({ saved: false, following: false }) });
+
+    const notifications = await mockApi<{ items: Array<{ id: string; read_at: string | null }>; unread_count: number }>("/me/notifications?status=UNREAD");
+    expect(notifications.unread_count).toBeGreaterThan(0);
+    const read = await mockApi<{ read_at: string | null }>(`/me/notifications/${notifications.items[0].id}/read`, { method: "PATCH" });
+    expect(read.read_at).toBeTruthy();
+    expect(await mockApi<{ unread_count: number }>("/me/notifications/read-all", { method: "PATCH" })).toEqual({ unread_count: 0 });
+
+    const donation = await mockApi<Donation>("/donations", { method: "POST", body: JSON.stringify({ campaign_id: "campaign-school", amount: 250_000, anonymous: false }) });
+    const journey = await mockApi<{ reconciled: boolean; steps: Array<{ done: boolean }> }>(`/transparency/reconciliation/${donation.receipt_number}`);
+    expect(journey.reconciled).toBe(true);
+    expect(journey.steps.every((step) => step.done)).toBe(true);
+    const now = new Date();
+    const reconciliationPdf = await mockApi<Blob>(`/transparency/reconciliation-report?year=${now.getUTCFullYear()}&month=${now.getUTCMonth() + 1}`);
+    expect(reconciliationPdf.type).toBe("application/pdf");
+    expect(await reconciliationPdf.text()).toContain("%PDF-1.4");
+
+    await expect(mockApi("/campaigns/campaign-school/reports", { method: "POST", body: JSON.stringify({ category: "OTHER", detail: "short" }) })).rejects.toThrow();
+    const submitted = await mockApi<{ reference_code: string; status: string }>("/campaigns/campaign-school/reports", { method: "POST", body: JSON.stringify({ category: "FAKE_INFO", detail: "Can doi chieu hinh anh va thong tin nguoi keu goi." }) });
+    expect(submitted.status).toBe("RECEIVED");
+    expect((await mockApi<{ reference_code: string }>(`/reports/${submitted.reference_code}`)).reference_code).toBe(submitted.reference_code);
+
+    actAs({ id: "admin-demo", name: "Admin", email: "admin@demo.vn", role: "ADMIN" });
+    const reportQueue = await mockApi<Array<{ id: string; reference_code: string }>>("/admin/reports?status=RECEIVED");
+    const queued = reportQueue.find((item) => item.reference_code === submitted.reference_code)!;
+    await expect(mockApi(`/admin/reports/${queued.id}/status`, { method: "PATCH", body: JSON.stringify({ status: "RESOLVED" }) })).rejects.toThrow();
+    await expect(mockApi(`/admin/reports/${queued.id}/status`, { method: "PATCH", body: JSON.stringify({ status: "RESOLVED", resolution: "Da doi chieu va cong khai ket qua." }) })).rejects.toThrow();
+    const reviewing = await mockApi<{ status: string }>(`/admin/reports/${queued.id}/status`, { method: "PATCH", body: JSON.stringify({ status: "REVIEWING" }) });
+    expect(reviewing.status).toBe("REVIEWING");
+    const resolved = await mockApi<{ status: string }>(`/admin/reports/${queued.id}/status`, { method: "PATCH", body: JSON.stringify({ status: "RESOLVED", resolution: "Da doi chieu va cong khai ket qua." }) });
+    expect(resolved.status).toBe("RESOLVED");
+    const publicReports = await mockApi<{ resolved: number; items: Array<{ reference_code: string }> }>("/campaigns/campaign-school/reports/public");
+    expect(publicReports.items.some((item) => item.reference_code === submitted.reference_code)).toBe(true);
+    expect((await mockApi<Array<unknown>>("/admin/campaign-risks")).length).toBeGreaterThan(0);
+    expect(Array.isArray(await mockApi<Array<unknown>>("/admin/audit-logs/campaign"))).toBe(true);
+    expect(Array.isArray(await mockApi<Array<unknown>>("/admin/impact-reports?status=VERIFIED"))).toBe(true);
+  });
+
+  it("tracks organization verification details and review history", async () => {
+    actAs({ id: "org-pending", name: "Nhip Cau Nho", email: "contact@nhipcaunho.vn", role: "ORGANIZATION" });
+    const application = await mockApi<{ status: string; history: unknown[] }>("/organizations/application", { method: "POST", body: JSON.stringify({ legalName: "Nhip Cau Nho", registrationNumber: "NCN-2026", description: "Ho tro cong dong minh bach." }) });
+    expect(application.status).toBe("PENDING");
+    expect(application.history.length).toBeGreaterThan(0);
+    expect(await mockApi<{ status: string }>("/organizations/me")).toMatchObject({ status: "PENDING" });
+
+    actAs({ id: "admin-demo", name: "Admin", email: "admin@demo.vn", role: "ADMIN" });
+    const detailBefore = await mockApi<{ status: string; has_document: boolean }>("/organizations/org-pending/verification");
+    expect(detailBefore).toMatchObject({ status: "PENDING", has_document: true });
+    await mockApi("/admin/organizations/org-pending/status", { method: "PATCH", body: JSON.stringify({ status: "VERIFIED" }) });
+    const detailAfter = await mockApi<{ status: string; verified_at: string | null; expires_at: string | null; history: unknown[] }>("/organizations/org-pending/verification");
+    expect(detailAfter.status).toBe("VERIFIED");
+    expect(detailAfter.verified_at).toBeTruthy();
+    expect(detailAfter.expires_at).toBeTruthy();
+    expect(detailAfter.history.length).toBeGreaterThan(1);
+  });
+
+  it("rejects invalid donation amounts before changing financial data", async () => {
+    actAs({ id: "donor-demo", name: "Nguyễn Minh An", email: "donor@demo.vn", role: "DONOR" });
+    const before = await mockApi<Campaign>("/campaigns/campaign-school");
+    for (const amount of [-1_000, 999, 1_000.5, 1_000_000_001]) {
+      await expect(mockApi("/donations", { method: "POST", body: JSON.stringify({ campaign_id: before.id, amount }) })).rejects.toThrow("Số tiền quyên góp");
+    }
+    const after = await mockApi<Campaign>("/campaigns/campaign-school");
+    expect(after.raised_amount).toBe(before.raised_amount);
   });
 
   it("registers with consent and rejects duplicate or missing consent", async () => {
@@ -231,17 +360,27 @@ describe("mock API demo flows", () => {
   });
 
   it("lets admin lock and unlock user accounts without exposing passwords", async () => {
+    await mockApi<AuthPayload>("/auth/login", { method: "POST", body: JSON.stringify({ email: "donor@demo.vn", password: "Demo@123" }) });
     const adminLogin = await mockApi<AuthPayload>("/auth/login", { method: "POST", body: JSON.stringify({ email: "admin@demo.vn", password: "Demo@123" }) });
     actAs(adminLogin.user);
     const users = await mockApi<AccountUser[]>("/admin/users?role=DONOR");
     expect(users.some((item) => item.email === "donor@demo.vn")).toBe(true);
-    expect(JSON.stringify(users)).not.toContain("password");
-    const disabled = await mockApi<AccountUser>("/admin/users/donor-demo/status", { method: "PATCH", body: JSON.stringify({ status: "DISABLED" }) });
+    expect(users.every((item) => !Object.prototype.hasOwnProperty.call(item, "password"))).toBe(true);
+    expect(users[0]).toMatchObject({ auth_provider: "PASSWORD", has_local_password: true, active_session_count: 1 });
+    const edited = await mockApi<{ user: AccountUser }>("/admin/users/donor-demo/profile", { method: "PATCH", body: JSON.stringify({ name: "Nguyễn Minh An mới", email: "donor@demo.vn", reason: "Người dùng yêu cầu" }) });
+    expect(edited.user.name).toBe("Nguyễn Minh An mới");
+    const reset = await mockApi<{ delivery: string; password_setup_required: boolean }>("/admin/users/donor-demo/password-reset", { method: "POST", body: JSON.stringify({ reason: "Người dùng quên mật khẩu" }) });
+    expect(reset).toMatchObject({ delivery: "QUEUED", password_setup_required: false });
+    expect(Object.keys(reset)).not.toContain("token");
+    expect(Object.keys(reset)).not.toContain("password");
+    const revoked = await mockApi<{ revoked_session_count: number }>("/admin/users/donor-demo/revoke-sessions", { method: "POST", body: JSON.stringify({ reason: "Thiết bị thất lạc" }) });
+    expect(revoked.revoked_session_count).toBe(1);
+    const disabled = await mockApi<AccountUser>("/admin/users/donor-demo/status", { method: "PATCH", body: JSON.stringify({ status: "DISABLED", reason: "Theo yêu cầu chủ tài khoản" }) });
     expect(disabled.status).toBe("DISABLED");
     await expect(mockApi("/auth/login", { method: "POST", body: JSON.stringify({ email: "donor@demo.vn", password: "Demo@123" }) })).rejects.toThrow();
-    const active = await mockApi<AccountUser>("/admin/users/donor-demo/status", { method: "PATCH", body: JSON.stringify({ status: "ACTIVE" }) });
+    const active = await mockApi<AccountUser>("/admin/users/donor-demo/status", { method: "PATCH", body: JSON.stringify({ status: "ACTIVE", reason: "Đã xác minh lại" }) });
     expect(active.status).toBe("ACTIVE");
-    await expect(mockApi("/admin/users/admin-demo/status", { method: "PATCH", body: JSON.stringify({ status: "DISABLED" }) })).rejects.toThrow();
+    await expect(mockApi("/admin/users/admin-demo/status", { method: "PATCH", body: JSON.stringify({ status: "DISABLED", reason: "Không hợp lệ" }) })).rejects.toThrow();
     expect((await mockApi<AuthPayload>("/auth/login", { method: "POST", body: JSON.stringify({ email: "donor@demo.vn", password: "Demo@123" }) })).user.status).toBe("ACTIVE");
   });
 
@@ -308,7 +447,9 @@ describe("mock API demo flows", () => {
   it("verifies the seeded chain and detects payload tampering", async () => {
     const verification = await mockApi<LedgerVerification>("/transparency/verify");
     expect(verification.valid).toBe(true);
-    expect(verification.entries).toBe(5);
+    const allLedger = await mockApi<{ items: LedgerEntry[] }>("/transparency/ledger?limit=100");
+    expect(verification.entries).toBe(allLedger.items.length);
+    expect(verification.entries).toBeGreaterThan(0);
     const ledger = await mockApi<{ items: LedgerEntry[] }>("/transparency/ledger?event_type=FUND_USAGE_VERIFIED");
     expect(ledger.items).toHaveLength(1);
 

@@ -74,6 +74,71 @@ describe("campaign HTTP API", () => {
     expect((await request(app).get("/campaigns/missing")).status).toBe(404);
   });
 
+  it("accepts a suspicious-campaign report and returns a tracking code", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ id: "c1", title: "Chiến dịch" }] as never)
+      .mockResolvedValueOnce([{ reference_code: "BC-2026-ABCD1234", status: "RECEIVED", created_at: "2026-07-01T00:00:00.000Z" }] as never);
+    const response = await request(app).post("/campaigns/c1/reports").send({ category: "FRAUD", detail: "Nghi ngờ chiến dịch giả mạo, ảnh sao chép." });
+    expect(response.status).toBe(201);
+    expect(response.body.reference_code).toBe("BC-2026-ABCD1234");
+    expect(response.body.status).toBe("RECEIVED");
+  });
+
+  it("rejects invalid reports and unknown campaigns", async () => {
+    expect((await request(app).post("/campaigns/c1/reports").send({ category: "FRAUD", detail: "ngắn" })).status).toBe(400);
+    queryMock.mockResolvedValueOnce([] as never);
+    expect((await request(app).post("/campaigns/none/reports").send({ category: "OTHER", detail: "Nội dung báo cáo đủ dài để hợp lệ." })).status).toBe(404);
+  });
+
+  it("looks up a report by tracking code and shows the public resolution", async () => {
+    queryMock.mockResolvedValueOnce([{ reference_code: "BC-2026-ABCD1234", category: "FRAUD", status: "RESOLVED", resolution: "Đã gỡ chiến dịch vi phạm.", campaign_id: "c1", created_at: "2026-07-01T00:00:00.000Z", reviewed_at: "2026-07-02T00:00:00.000Z", title: "Chiến dịch" }] as never);
+    const response = await request(app).get("/reports/BC-2026-ABCD1234");
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: "RESOLVED", resolution: "Đã gỡ chiến dịch vi phạm.", campaign_title: "Chiến dịch" });
+    queryMock.mockResolvedValueOnce([] as never);
+    expect((await request(app).get("/reports/NONE")).status).toBe(404);
+  });
+
+  it("requires the admin to review a report before publishing a final result", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ status: "RECEIVED" }] as never)
+      .mockResolvedValueOnce([{ id: "r1", status: "REVIEWING" }] as never)
+      .mockResolvedValueOnce([{ status: "REVIEWING" }] as never)
+      .mockResolvedValueOnce([{ id: "r1", status: "RESOLVED", resolution: "Xác minh không vi phạm." }] as never);
+
+    const reviewing = await request(app).patch("/admin/reports/r1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "REVIEWING" });
+    expect(reviewing.status).toBe(200);
+    expect(reviewing.body.status).toBe("REVIEWING");
+
+    const response = await request(app).patch("/admin/reports/r1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "RESOLVED", resolution: "Xác minh không vi phạm." });
+    expect(response.status).toBe(200);
+    expect(auditMock).toHaveBeenCalledWith("00000000-0000-0000-0000-000000000003", "CAMPAIGN_REPORT_RESOLVED", "r1", { status: "REVIEWING" }, expect.anything());
+    expect((await request(app).patch("/admin/reports/r1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "RESOLVED" })).status).toBe(400);
+  });
+
+  it("blocks skipped or reversed report review transitions", async () => {
+    queryMock.mockResolvedValueOnce([{ status: "RECEIVED" }] as never);
+    expect((await request(app).patch("/admin/reports/r1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "RESOLVED", resolution: "Kết luận" })).status).toBe(409);
+
+    queryMock.mockResolvedValueOnce([{ status: "RESOLVED" }] as never);
+    expect((await request(app).patch("/admin/reports/r1/status").set("Authorization", `Bearer ${adminToken}`).send({ status: "REVIEWING" })).status).toBe(409);
+  });
+
+  it("publishes resolved report summaries and lets admin filter the review queue", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ total: "3", resolved: "2", open: "1" }] as never)
+      .mockResolvedValueOnce([{ reference_code: "BC-2026-ONE", status: "RESOLVED" }] as never);
+    const publicSummary = await request(app).get("/campaigns/c1/reports/public");
+    expect(publicSummary.status).toBe(200);
+    expect(publicSummary.body).toMatchObject({ total: 3, resolved: 2, open: 1 });
+    expect(publicSummary.body.items).toHaveLength(1);
+
+    queryMock.mockResolvedValueOnce([{ id: "r1", status: "REVIEWING", campaign_title: "Chiến dịch" }] as never);
+    const queue = await request(app).get("/admin/reports?status=REVIEWING").set("Authorization", `Bearer ${adminToken}`);
+    expect(queue.status).toBe(200);
+    expect(queue.body[0].status).toBe("REVIEWING");
+  });
+
   it("lists organization campaigns", async () => {
     queryMock.mockResolvedValueOnce([{ id: "c1" }] as never);
     expect((await request(app).get("/organization/campaigns").set("Authorization", `Bearer ${orgToken}`)).status).toBe(200);
@@ -417,5 +482,19 @@ describe("campaign HTTP API", () => {
     expect((await request(app).get("/internal/campaigns/missing/owner").set("x-internal-token", "local-internal-token")).status).toBe(404);
     queryMock.mockResolvedValueOnce([{ id: "c1" }, { id: "c2" }] as never);
     expect((await request(app).get("/internal/organizations/org-1/campaign-ids").set("x-internal-token", "local-internal-token")).body.campaign_ids).toEqual(["c1", "c2"]);
+  });
+
+  it("reconciles campaign credit and escrow lock state by donation event", async () => {
+    queryMock
+      .mockResolvedValueOnce([{ campaign_id: "c1", amount: "50000" }] as never)
+      .mockResolvedValueOnce([{ amount: "50000" }] as never)
+      .mockResolvedValueOnce([{ contract_state: "DONATION_OPEN" }] as never);
+    const response = await request(app).get("/internal/donations/event-1/reconciliation").set("x-internal-token", "local-internal-token");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ credited: true, locked: true, campaign_id: "c1", credited_amount: 50000, contract_state: "DONATION_OPEN" });
+
+    queryMock.mockResolvedValueOnce([] as never).mockResolvedValueOnce([] as never);
+    const missing = await request(app).get("/internal/donations/event-missing/reconciliation").set("x-internal-token", "local-internal-token");
+    expect(missing.body).toEqual({ credited: false, locked: false, campaign_id: null, credited_amount: null, contract_state: null });
   });
 });

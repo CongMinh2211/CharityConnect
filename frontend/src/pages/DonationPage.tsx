@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, formatVnd } from "../lib/api";
@@ -7,6 +7,7 @@ import type { Campaign, Donation } from "../types";
 const presets = [50_000, 100_000, 200_000, 500_000];
 const MIN_AMOUNT = 1_000;
 const MAX_AMOUNT = 1_000_000_000;
+const REVIEW_THRESHOLD = 50_000_000;
 
 function daysLeft(endDate?: string): number | null {
   if (!endDate) return null;
@@ -18,12 +19,36 @@ function daysLeft(endDate?: string): number | null {
 export function DonationPage(): JSX.Element {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [amount, setAmount] = useState(100_000);
   const [anonymous, setAnonymous] = useState(false);
+  const [honorConsent, setHonorConsent] = useState(false);
   const campaign = useQuery({ queryKey: ["campaign", id], queryFn: () => api<Campaign>(`/campaigns/${id}`) });
   const donation = useMutation({
-    mutationFn: () => api<Donation>("/donations", { method: "POST", body: JSON.stringify({ campaign_id: id, amount, anonymous }) }),
-    onSuccess: (result) => navigate(`/bien-nhan/${result.id}`, { state: { emailQueued: true } })
+    mutationFn: () => api<Donation>("/donations", { method: "POST", body: JSON.stringify({ campaign_id: id, amount, anonymous, honor_consent: honorConsent && !anonymous }) }),
+    onSuccess: (result) => {
+      if (result.status === "PENDING_REVIEW") {
+        void queryClient.invalidateQueries({ queryKey: ["donation-history"], refetchType: "none" });
+        navigate("/lich-su", { state: { pendingReview: true } });
+        return;
+      }
+      const expectedRaised = (campaign.data?.raised_amount ?? 0) + result.amount;
+      queryClient.setQueryData<Campaign>(["campaign", id], (current) => current
+        ? { ...current, raised_amount: Math.max(current.raised_amount, expectedRaised) }
+        : current);
+      queryClient.setQueriesData<Campaign[]>({ queryKey: ["campaigns"] }, (current) => current?.map((item) => item.id === id
+        ? { ...item, raised_amount: Math.max(item.raised_amount, expectedRaised) }
+        : item));
+
+      // Các màn hình tổng hợp sẽ đọc lại dữ liệu mới khi người dùng mở chúng.
+      for (const queryKey of [
+        ["analytics-donations-public"], ["analytics-campaigns-public"], ["analytics-donations-role"],
+        ["donation-history"], ["public-ledger"], ["ledger-verification"], ["transparency-campaigns"],
+        ["home-role", "donations"],
+      ]) void queryClient.invalidateQueries({ queryKey, refetchType: "none" });
+      queryClient.removeQueries({ queryKey: ["campaign-contract", id] });
+      navigate(`/bien-nhan/${result.id}`, { state: { emailQueued: true } });
+    }
   });
   function submit(event: FormEvent<HTMLFormElement>): void { event.preventDefault(); donation.mutate(); }
 
@@ -45,7 +70,7 @@ export function DonationPage(): JSX.Element {
           <p className="font-bold text-brand-700">Quyên góp an toàn</p>
           <h1 className="mt-1 text-3xl font-black">{data?.title ?? "Chiến dịch"}</h1>
           {data?.organization_name && <p className="mt-1 text-sm text-slate-500">Tổ chức: {data.organization_name}</p>}
-          <p className="mt-2 text-slate-600">Giao dịch được xác nhận tức thì và ghi vào sổ cái minh bạch.</p>
+          <p className="mt-2 text-slate-600">Khoản thường được xác nhận tức thì và ghi vào sổ cái minh bạch; khoản lớn sẽ qua bước quản trị viên xác minh.</p>
 
           {goal > 0 && (
             <div className="mt-6 rounded-2xl bg-sage-100/60 p-4">
@@ -75,7 +100,12 @@ export function DonationPage(): JSX.Element {
             <p className="mt-4 rounded-xl bg-brand-50 p-3 text-sm font-semibold text-brand-800">Sau đóng góp này, chiến dịch đạt {projected.toFixed(1)}% mục tiêu.</p>
           )}
 
+          {validAmount && amount >= REVIEW_THRESHOLD && (
+            <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">Khoản từ {formatVnd(REVIEW_THRESHOLD)} trở lên sẽ được quản trị viên xác minh trước khi ghi nhận công khai — chưa cộng vào chiến dịch cho tới khi được duyệt.</p>
+          )}
+
           <label className="mt-5 flex items-start gap-3 rounded-xl bg-slate-50 p-4"><input className="mt-1 h-4 w-4" type="checkbox" checked={anonymous} onChange={(event) => setAnonymous(event.target.checked)} /><span><strong>Quyên góp ẩn danh</strong><span className="mt-1 block text-sm text-slate-600">Tổ chức sẽ chỉ thấy “Ẩn danh”; quản trị hệ thống vẫn lưu danh tính để đối soát.</span></span></label>
+          <label className={`mt-3 flex items-start gap-3 rounded-xl bg-slate-50 p-4 ${anonymous ? "opacity-50" : ""}`}><input className="mt-1 h-4 w-4" type="checkbox" checked={honorConsent && !anonymous} disabled={anonymous} onChange={(event) => setHonorConsent(event.target.checked)} /><span><strong>Cho phép vinh danh tên tôi công khai</strong><span className="mt-1 block text-sm text-slate-600">Tên bạn sẽ xuất hiện trên bảng “Tấm lòng vàng”. Không chọn thì bạn được ghi nhận là “Nhà hảo tâm ẩn danh”.</span></span></label>
           {donation.isError && <p className="mt-4 text-sm font-semibold text-rose-700">{donation.error.message}</p>}
           <button className="btn-primary mt-7 w-full" disabled={donation.isPending || !validAmount}>{donation.isPending ? "Đang xử lý…" : `Xác nhận ${formatVnd(validAmount ? amount : 0)}`}</button>
         </form>

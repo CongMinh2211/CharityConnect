@@ -10,8 +10,8 @@ RUN cd frontend && npm ci
 
 COPY frontend ./frontend
 
-ARG VITE_USE_MOCK_API=true
-ARG VITE_API_BASE_URL=/api/v1
+ARG VITE_USE_MOCK_API=false
+ARG VITE_API_BASE_URL=https://charityconnect-gateway.onrender.com/api/v1
 ARG VITE_ASSISTANT_URL=https://charityconnect-assistant.onrender.com
 ARG VITE_GOOGLE_CLIENT_ID=
 ENV VITE_USE_MOCK_API=$VITE_USE_MOCK_API

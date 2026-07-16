@@ -36,7 +36,7 @@ export function AppShell(): JSX.Element {
             <NavLink to="/chien-dich" className={navClass}>Chiến dịch</NavLink>
             <NavLink to="/canh-bao" className={navClass}>Cảnh báo</NavLink>
             <NavLink to="/minh-bach" className={navClass}>Minh bạch</NavLink>
-            <NavLink to="/thong-ke" className={navClass}>Thống kê</NavLink>
+            <NavLink to="/thong-ke" className={navClass}>Sao kê</NavLink>
           </nav>
           <div className="flex items-center gap-2">
             {user?.role === "DONOR" && (

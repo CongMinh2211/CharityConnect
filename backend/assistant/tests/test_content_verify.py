@@ -42,6 +42,13 @@ def test_analyze_source_scores_whitelist_and_evidence():
     blocked = client.post("/assistant/analyze-source", json={"url": "https://example.com/random"}).json()
     assert blocked["allowed"] is False
 
+    own_site = client.post("/assistant/analyze-source", json={"url": "https://charityconnect-7kep.onrender.com/"}).json()
+    assert own_site["allowed"] is True
+    assert own_site["source_name"] == "CharityConnect"
+    assert own_site["score"]["total"] == 98
+    assert own_site["verdict"] == "TRUSTED"
+    assert own_site["signals"] == []
+
 
 def test_analyze_source_detects_scam_signals_and_verdict():
     # Lời kêu gọi lừa đảo điển hình -> HIGH_RISK với nhiều dấu hiệu.

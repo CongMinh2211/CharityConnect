@@ -1,13 +1,14 @@
 export type Role = "DONOR" | "ORGANIZATION" | "ADMIN";
 export type CampaignStatus = "DRAFT" | "PENDING_REVIEW" | "APPROVED" | "REJECTED" | "CLOSED";
 export type LedgerEventType = "DONATION_COMPLETED" | "FUND_USAGE_VERIFIED";
-export type LedgerProofStatus = "CONFIRMED" | "PENDING" | "INVALID";
+export type LedgerProofStatus = "CONFIRMED" | "PENDING" | "PENDING_REVIEW" | "INVALID";
 export type ImpactReportStatus = "DRAFT" | "PENDING_REVIEW" | "VERIFIED" | "REJECTED";
 export type AnchorStatus = "SIMULATED" | "PENDING" | "CONFIRMED" | "FAILED";
 export type ReceiptVerificationStatus = "CONFIRMED" | "UNANCHORED" | "INVALID";
 export type ContractState = "CREATED" | "APPROVED" | "DONATION_OPEN" | "FUND_LOCKED" | "USAGE_SUBMITTED" | "USAGE_VERIFIED" | "FUND_RELEASED" | "CLOSED";
 
 export type UserStatus = "ACTIVE" | "DISABLED";
+export type AuthProvider = "PASSWORD" | "GOOGLE" | "GOOGLE_AND_PASSWORD";
 export interface User {
   id: string;
   email: string;
@@ -19,13 +20,23 @@ export interface User {
   address?: string | null;
   date_of_birth?: string | null;
   organization_name?: string | null;
+  auth_provider?: AuthProvider;
+  has_local_password?: boolean;
+  google_connected?: boolean;
 }
 export interface AuthPayload { token: string; refresh_token?: string; user: User; email_notification?: "QUEUED" }
 export interface AccountSession {
   id: string; user_agent?: string | null; ip_address?: string | null; created_at: string;
   last_seen_at?: string; expires_at?: string; revoked_at?: string | null; current?: boolean;
 }
-export interface AccountUser extends User { status: UserStatus; created_at?: string; updated_at?: string }
+export interface AccountUser extends User {
+  status: UserStatus;
+  created_at?: string;
+  updated_at?: string;
+  active_session_count?: number;
+  is_online?: boolean;
+  last_login_at?: string | null;
+}
 export interface Campaign {
   id: string;
   organization_id: string;
@@ -49,12 +60,42 @@ export interface Donation {
   campaign_title: string;
   amount: number;
   anonymous: boolean;
-  status: "COMPLETED" | "FAILED";
+  honor_consent?: boolean;
+  status: "COMPLETED" | "FAILED" | "PENDING_REVIEW" | "REJECTED";
   created_at: string;
   receipt_number: string;
   ledger_hash?: string;
   ledger_position?: number;
   proof_status?: LedgerProofStatus;
+  review_reason?: string;
+}
+export interface PendingDonation {
+  id: string; donor_name: string; campaign_id: string; campaign_title: string;
+  amount: number; anonymous: boolean; honor_consent: boolean; status: string;
+  created_at: string; receipt_number: string;
+}
+export interface ReconciliationStep {
+  key: "RECEIVED" | "CAMPAIGN_CREDITED" | "FUNDS_LOCKED" | "TRUSTCHAIN";
+  label: string; service: string; done: boolean; at: string | null; detail: string;
+}
+export interface ReconciliationJourney {
+  receipt_number: string; amount: number; campaign_id: string; campaign_title: string;
+  created_at: string; status: string; steps: ReconciliationStep[]; reconciled: boolean; chain_valid: boolean;
+}
+export type ReportCategory = "FRAUD" | "MISUSE" | "FAKE_INFO" | "DUPLICATE" | "OTHER";
+export type ReportStatus = "RECEIVED" | "REVIEWING" | "RESOLVED" | "DISMISSED";
+export interface ReportReceipt { reference_code: string; status: ReportStatus; created_at: string; campaign_id: string; campaign_title: string; message: string }
+export interface ReportLookup { reference_code: string; category: ReportCategory; status: ReportStatus; resolution: string | null; campaign_id: string; campaign_title: string; created_at: string; reviewed_at: string | null }
+export interface AdminReport { id: string; reference_code: string; campaign_id: string; campaign_title: string; reporter_email: string | null; category: ReportCategory; detail: string; status: ReportStatus; resolution: string | null; created_at: string; reviewed_at: string | null }
+export interface CampaignReportItem { reference_code: string; category: ReportCategory; status: ReportStatus; resolution: string | null; created_at: string; reviewed_at: string | null }
+export interface CampaignReportsPublic { total: number; resolved: number; open: number; items: CampaignReportItem[] }
+
+export interface OrgStatusEvent { action: string; at: string; reason: string | null }
+export interface OrganizationVerification {
+  id: string; legal_name: string; registration_number: string; description: string;
+  status: "PENDING" | "VERIFIED" | "REJECTED"; submitted_at: string | null;
+  verified_at: string | null; expires_at: string | null; has_document: boolean;
+  history: OrgStatusEvent[];
 }
 
 export interface LedgerEntry {
@@ -141,7 +182,7 @@ export interface FinancialPlan { campaign_id: string; goal_amount: number; budge
 export interface ImpactAllocation { budget_item_id: string; amount: number }
 export interface RiskSignal { code: string; points: number; explanation: string }
 export interface RiskAssessment { campaign_id: string; campaign_title: string; organization_name: string; status: CampaignStatus; score: number; level: "LOW" | "MEDIUM" | "HIGH"; priority_rank: number; signals: RiskSignal[] }
-export interface AuditLogEntry { id: string; actor_id?: string | null; action: string; entity_type: string; entity_id: string; previous_value?: unknown; new_value?: unknown; created_at: string; service: "IDENTITY" | "CAMPAIGN" }
+export interface AuditLogEntry { id: string; actor_id?: string | null; action: string; entity_type: string; entity_id: string; previous_value?: unknown; new_value?: unknown; created_at: string; service: "IDENTITY" | "CAMPAIGN" | "DONATION" }
 
 export interface AssistantResponse {
   answer: string;
@@ -185,6 +226,11 @@ export interface CampaignAnalytics {
   campaign_progress: Array<{ id: string; title: string; category: string; goal_amount: number; raised_amount: number; used_amount?: number; transparent_balance?: number; status: CampaignStatus; progress_percent: number }>;
 }
 export interface UserAnalytics { as_of: string; totals: { donor_count: number; verified_organization_count: number } }
+export interface TopDonor {
+  rank: number; display_name: string; anonymous: boolean;
+  total_amount: number; donation_count: number; last_donation_at: string | null;
+}
+export interface TopDonorsResponse { period: AnalyticsPeriod; as_of: string; donors: TopDonor[] }
 
 export interface AssistantRequest {
   message: string;
@@ -247,7 +293,7 @@ export interface ContentSource {
   name: string;
   url: string;
   level: ContentSourceLevel;
-  kind: "GOVERNMENT" | "PRESS" | "OFFICIAL_ORG" | "VIDEO" | "SOCIAL";
+  kind: "GOVERNMENT" | "PRESS" | "OFFICIAL_ORG" | "VIDEO" | "SOCIAL" | "INTERNAL_PLATFORM";
   description: string;
 }
 

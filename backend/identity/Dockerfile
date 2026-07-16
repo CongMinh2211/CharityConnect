@@ -13,6 +13,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/openapi.json ./openapi.json
+COPY sql ./sql
 RUN mkdir -p /app/uploads
 USER node
 EXPOSE 3001

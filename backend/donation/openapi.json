@@ -84,6 +84,180 @@
         }
       }
     },
+    "/admin/donations/pending": {
+      "get": {
+        "summary": "List Pending Donations",
+        "operationId": "list_pending_donations_admin_donations_pending_get",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "title": "Response List Pending Donations Admin Donations Pending Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/donations/{donation_id}/approve": {
+      "post": {
+        "summary": "Approve Donation",
+        "operationId": "approve_donation_admin_donations__donation_id__approve_post",
+        "parameters": [
+          {
+            "name": "donation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Donation Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Approve Donation Admin Donations  Donation Id  Approve Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/donations/{donation_id}/reject": {
+      "post": {
+        "summary": "Reject Donation",
+        "operationId": "reject_donation_admin_donations__donation_id__reject_post",
+        "parameters": [
+          {
+            "name": "donation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Donation Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DonationReject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Reject Donation Admin Donations  Donation Id  Reject Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/analytics/donations/public": {
       "get": {
         "summary": "Public Donation Analytics",
@@ -296,6 +470,57 @@
         }
       }
     },
+    "/analytics/donations/top-donors": {
+      "get": {
+        "summary": "Public Top Donors",
+        "operationId": "public_top_donors_analytics_donations_top_donors_get",
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Period"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Public Top Donors Analytics Donations Top Donors Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/donations/history": {
       "get": {
         "summary": "Donation History",
@@ -374,6 +599,53 @@
                 }
               ],
               "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transparency/reconciliation-report": {
+      "get": {
+        "summary": "Reconciliation Report",
+        "description": "Báo cáo đối soát công khai theo tháng dưới dạng PDF: số dư đầu/cuối kỳ, tổng\nthu (nguồn chuẩn Donation Service) đối chiếu với sổ cái, tổng chi đã xác minh,\ntình trạng hash-chain và danh sách giao dịch trong kỳ. Không chứa dữ liệu cá nhân.",
+        "operationId": "reconciliation_report_transparency_reconciliation_report_get",
+        "parameters": [
+          {
+            "name": "year",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Year"
+            }
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Month"
             }
           }
         ],
@@ -925,6 +1197,47 @@
         }
       }
     },
+    "/transparency/reconciliation/{receipt_number}": {
+      "get": {
+        "summary": "Public Reconciliation",
+        "description": "Hành trình đối soát công khai của một biên nhận qua 4 bước:\nđã nhận → đã cộng chiến dịch → đã khóa quỹ → đã ghi TrustChain. Bước 2–3 đối\nchiếu chéo với Campaign Service (best-effort); bước 1,4 nằm ở Donation Service.",
+        "operationId": "public_reconciliation_transparency_reconciliation__receipt_number__get",
+        "parameters": [
+          {
+            "name": "receipt_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Receipt Number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "title": "Response Public Reconciliation Transparency Reconciliation  Receipt Number  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/transparency/diagnostics/receipts/{receipt_number}": {
       "get": {
         "summary": "Receipt Diagnostics",
@@ -1025,6 +1338,11 @@
             "type": "boolean",
             "title": "Anonymous",
             "default": false
+          },
+          "honor_consent": {
+            "type": "boolean",
+            "title": "Honor Consent",
+            "default": false
           }
         },
         "type": "object",
@@ -1033,6 +1351,21 @@
           "amount"
         ],
         "title": "DonationCreate"
+      },
+      "DonationReject": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "DonationReject"
       },
       "HTTPValidationError": {
         "properties": {

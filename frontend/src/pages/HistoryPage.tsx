@@ -13,7 +13,9 @@ export function HistoryPage(): JSX.Element {
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const visible = history.data?.filter((item) => new Date(item.created_at).getFullYear() === year) ?? [];
-  const total = visible.reduce((sum, item) => sum + item.amount, 0);
+  const completed = visible.filter((item) => item.status === "COMPLETED");
+  const pendingCount = visible.filter((item) => item.status === "PENDING_REVIEW").length;
+  const total = completed.reduce((sum, item) => sum + item.amount, 0);
 
   async function downloadStatement(): Promise<void> {
     setDownloading(true);
@@ -53,9 +55,9 @@ export function HistoryPage(): JSX.Element {
       </div>
 
       <div className="mt-6 grid gap-4 sm:grid-cols-3">
-        <SummaryCard label={`Tổng đóng góp ${year}`} value={formatVnd(total)} />
-        <SummaryCard label="Số lượt" value={String(visible.length)} />
-        <SummaryCard label="Trạng thái xác minh" value={visible.every((item) => (item.proof_status ?? item.status) === "CONFIRMED") ? "Đã xác minh" : "Đang xử lý"} />
+        <SummaryCard label={`Đã xác nhận ${year}`} value={formatVnd(total)} />
+        <SummaryCard label="Số lượt đã xác nhận" value={String(completed.length)} />
+        <SummaryCard label="Khoản chờ duyệt" value={String(pendingCount)} />
       </div>
 
       {error && <p className="mt-4 rounded-xl bg-rose-50 p-3 text-sm font-semibold text-rose-700" role="alert">{error}</p>}
@@ -83,6 +85,7 @@ export function HistoryPage(): JSX.Element {
                   <div className="flex flex-wrap gap-2">
                     <Link className="rounded-full bg-brand-50 px-3 py-1.5 text-xs font-black text-brand-800" to={`/bien-nhan/${item.id}`}>Biên nhận {item.receipt_number}</Link>
                     <Link className="rounded-full bg-sage-100 px-3 py-1.5 text-xs font-black text-ink" to={`/xac-minh-bien-nhan?receipt=${encodeURIComponent(item.receipt_number)}`}>Xác minh công khai</Link>
+                    <Link className="rounded-full bg-brand-100 px-3 py-1.5 text-xs font-black text-brand-900" to={`/doi-soat?receipt=${encodeURIComponent(item.receipt_number)}`}>Đối soát 4 bước</Link>
                     <Link className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-700" to="/minh-bach"><Landmark size={13} /> Sổ cái</Link>
                     <Link className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1.5 text-xs font-black text-slate-700 ring-1 ring-slate-200" to={`/chien-dich/${item.campaign_id}`}>Chi tiết <ExternalLink size={12} /></Link>
                   </div>

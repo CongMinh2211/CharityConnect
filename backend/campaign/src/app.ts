@@ -771,6 +771,106 @@ app.patch("/admin/impact-reports/:id/status", authenticate, authorize("ADMIN"), 
   } finally { client.release(); }
 });
 
+const reportInput = z.object({
+  category: z.enum(["FRAUD", "MISUSE", "FAKE_INFO", "DUPLICATE", "OTHER"]),
+  detail: z.string().trim().min(10).max(2000),
+  reporter_email: z.string().trim().email().max(200).optional().or(z.literal("")),
+});
+
+function makeReportCode(): string {
+  return `BC-${new Date().getFullYear()}-${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+}
+
+app.post("/campaigns/:id/reports", async (req, res, next) => {
+  try {
+    const parsed = reportInput.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ message: "Dữ liệu báo cáo không hợp lệ", issues: parsed.error.issues }); return; }
+    const campaign = (await query<{ id: string; title: string }>("SELECT id,title FROM campaigns WHERE id=$1 AND deleted_at IS NULL", [req.params.id]))[0];
+    if (!campaign) { res.status(404).json({ message: "Không tìm thấy chiến dịch" }); return; }
+    const referenceCode = makeReportCode();
+    const rows = await query<{ reference_code: string; status: string; created_at: string }>(
+      `INSERT INTO campaign_reports(reference_code,campaign_id,reporter_email,category,detail)
+       VALUES($1,$2,$3,$4,$5) RETURNING reference_code,status,created_at`,
+      [referenceCode, campaign.id, parsed.data.reporter_email || null, parsed.data.category, parsed.data.detail]
+    );
+    res.status(201).json({
+      ...rows[0], campaign_id: campaign.id, campaign_title: campaign.title,
+      message: "Đã tiếp nhận báo cáo. Vui lòng lưu mã tiếp nhận để tra cứu kết quả xử lý.",
+    });
+  } catch (error) { next(error); }
+});
+
+app.get("/reports/:code", async (req, res, next) => {
+  try {
+    const row = (await query<{
+      reference_code: string; category: string; status: string; resolution: string | null;
+      campaign_id: string; created_at: string; reviewed_at: string | null; title: string;
+    }>(
+      `SELECT r.reference_code,r.category,r.status,r.resolution,r.campaign_id,r.created_at,r.reviewed_at,c.title
+       FROM campaign_reports r JOIN campaigns c ON c.id=r.campaign_id WHERE r.reference_code=$1`,
+      [req.params.code]
+    ))[0];
+    if (!row) { res.status(404).json({ message: "Không tìm thấy báo cáo với mã này" }); return; }
+    res.json({
+      reference_code: row.reference_code, category: row.category, status: row.status, resolution: row.resolution,
+      campaign_id: row.campaign_id, campaign_title: row.title, created_at: row.created_at, reviewed_at: row.reviewed_at,
+    });
+  } catch (error) { next(error); }
+});
+
+app.get("/campaigns/:id/reports/public", async (req, res, next) => {
+  try {
+    const summary = (await query<{ total: string; resolved: string; open: string }>(
+      `SELECT count(*)::text AS total,
+              count(*) FILTER(WHERE status IN ('RESOLVED','DISMISSED'))::text AS resolved,
+              count(*) FILTER(WHERE status IN ('RECEIVED','REVIEWING'))::text AS open
+       FROM campaign_reports WHERE campaign_id=$1`, [req.params.id]
+    ))[0];
+    const items = await query(
+      `SELECT reference_code,category,status,resolution,created_at,reviewed_at
+       FROM campaign_reports WHERE campaign_id=$1 AND status IN ('RESOLVED','DISMISSED')
+       ORDER BY reviewed_at DESC NULLS LAST LIMIT 20`, [req.params.id]
+    );
+    res.json({ total: Number(summary.total), resolved: Number(summary.resolved), open: Number(summary.open), items });
+  } catch (error) { next(error); }
+});
+
+app.get("/admin/reports", authenticate, authorize("ADMIN"), async (req, res, next) => {
+  try {
+    const status = z.enum(["RECEIVED", "REVIEWING", "RESOLVED", "DISMISSED"]).optional().parse(req.query.status);
+    const rows = await query(
+      `SELECT r.*,c.title AS campaign_title FROM campaign_reports r JOIN campaigns c ON c.id=r.campaign_id
+       WHERE ($1::text IS NULL OR r.status=$1) ORDER BY r.created_at ASC`, [status ?? null]
+    );
+    res.json(rows);
+  } catch (error) { next(error); }
+});
+
+app.patch("/admin/reports/:id/status", authenticate, authorize("ADMIN"), async (req: AuthRequest, res, next) => {
+  try {
+    const input = z.object({ status: z.enum(["REVIEWING", "RESOLVED", "DISMISSED"]), resolution: z.string().trim().max(1000).optional() }).parse(req.body);
+    if ((input.status === "RESOLVED" || input.status === "DISMISSED") && !input.resolution) {
+      res.status(400).json({ message: "Cần nhập kết quả xử lý công khai" }); return;
+    }
+    const before = (await query<{ status: string }>("SELECT status FROM campaign_reports WHERE id=$1", [req.params.id]))[0];
+    if (!before) { res.status(404).json({ message: "Không tìm thấy báo cáo" }); return; }
+    const terminal = input.status === "RESOLVED" || input.status === "DISMISSED";
+    const transitionAllowed = (before.status === "RECEIVED" && input.status === "REVIEWING")
+      || (before.status === "REVIEWING" && terminal);
+    if (!transitionAllowed) {
+      res.status(409).json({ message: "Báo cáo phải qua bước đang xem xét trước khi có kết quả cuối cùng" }); return;
+    }
+    const rows = await query(
+      `UPDATE campaign_reports SET status=$1,resolution=COALESCE($2,resolution),
+         reviewed_at=CASE WHEN $3 THEN now() ELSE reviewed_at END,reviewed_by=$4
+       WHERE id=$5 RETURNING *`,
+      [input.status, input.resolution ?? null, terminal, req.user!.sub, req.params.id]
+    );
+    await audit(req.user!.sub, `CAMPAIGN_REPORT_${input.status}`, String(req.params.id), before, rows[0]);
+    res.json(rows[0]);
+  } catch (error) { next(error); }
+});
+
 app.get("/internal/campaigns/:id/donation-eligibility", internalOnly, async (req, res, next) => {
   try {
     const row = (await query<{ id: string; status: CampaignStatus; end_date: Date; title: string; organization_id: string }>("SELECT id,status,end_date,title,organization_id FROM campaigns WHERE id=$1 AND deleted_at IS NULL", [req.params.id]))[0];
@@ -784,6 +884,21 @@ app.get("/internal/campaigns/:id/owner", internalOnly, async (req, res, next) =>
     const row = (await query("SELECT organization_id,title FROM campaigns WHERE id=$1 AND deleted_at IS NULL", [req.params.id]))[0];
     if (!row) { res.status(404).json({ message: "Not found" }); return; }
     res.json(row);
+  } catch (error) { next(error); }
+});
+
+app.get("/internal/donations/:eventId/reconciliation", internalOnly, async (req, res, next) => {
+  try {
+    const processed = (await query<{ campaign_id: string; amount: string }>("SELECT campaign_id,amount FROM processed_donation_events WHERE event_id=$1", [req.params.eventId]))[0];
+    const locked = (await query<{ amount: string }>("SELECT amount FROM escrow_state_history WHERE source_event_id=$1 AND state='DONATION_OPEN'", [req.params.eventId]))[0];
+    const escrow = processed ? (await query<{ contract_state: string }>("SELECT contract_state FROM campaign_escrows WHERE campaign_id=$1", [processed.campaign_id]))[0] : undefined;
+    res.json({
+      credited: Boolean(processed),
+      locked: Boolean(locked),
+      campaign_id: processed?.campaign_id ?? null,
+      credited_amount: processed ? Number(processed.amount) : null,
+      contract_state: escrow?.contract_state ?? null,
+    });
   } catch (error) { next(error); }
 });
 

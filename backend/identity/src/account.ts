@@ -25,12 +25,21 @@ const changePasswordSchema = z.object({
   current_password: z.string().min(1),
   new_password: z.string().min(8).max(128),
 });
+const setPasswordSchema = z.object({ new_password: z.string().min(8).max(128) });
 const resetRequestSchema = z.object({ email: z.string().email() });
 const resetConfirmSchema = z.object({ token: z.string().min(32).max(256), new_password: z.string().min(8).max(128) });
 const userStatusSchema = z.object({
   status: z.enum(["ACTIVE", "DISABLED"]),
   reason: z.string().trim().max(500).optional(),
 });
+const adminProfileSchema = z.object({
+  name: z.string().trim().min(2).max(120).optional(),
+  email: z.string().trim().email().transform((value) => value.toLowerCase()).optional(),
+  reason: z.string().trim().min(3).max(500),
+}).refine((input) => input.name !== undefined || input.email !== undefined, {
+  message: "Cần cung cấp tên hoặc email cần cập nhật",
+});
+const adminPasswordResetSchema = z.object({ reason: z.string().trim().min(3).max(500) });
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -86,6 +95,43 @@ accountRouter.post("/auth/change-password", authenticate, async (req: AuthReques
       actorRole: req.user!.role, ip: req.ip, userAgent: req.headers["user-agent"] as string | undefined,
     });
     res.json({ message: "Đã đổi mật khẩu. Các phiên khác đã bị thu hồi." });
+  } catch (error) { next(error); }
+});
+
+// Google cung cấp bằng chứng đăng nhập, không cung cấp mật khẩu cho CharityConnect.
+// Người dùng Google đã xác thực có thể tự tạo mật khẩu cục bộ; DB chỉ lưu bcrypt hash.
+accountRouter.post("/auth/set-password", authenticate, async (req: AuthRequest, res, next) => {
+  try {
+    const input = setPasswordSchema.parse(req.body);
+    const user = (await query<{ password_hash: string | null; google_connected: boolean }>(
+      "SELECT password_hash,(google_subject IS NOT NULL) AS google_connected FROM users WHERE id=$1",
+      [req.user!.sub],
+    ))[0];
+    if (!user) { res.status(404).json({ message: "Không tìm thấy tài khoản" }); return; }
+    if (!user.google_connected) {
+      res.status(409).json({ message: "Chức năng này chỉ dùng để tạo mật khẩu cục bộ lần đầu cho tài khoản Google." });
+      return;
+    }
+    if (user.password_hash) {
+      res.status(409).json({ message: "Tài khoản đã có mật khẩu. Hãy dùng chức năng đổi mật khẩu." });
+      return;
+    }
+    const passwordHash = await bcrypt.hash(input.new_password, 12);
+    const rows = await query<{ id: string }>(
+      `WITH updated AS (
+         UPDATE users SET password_hash=$1,updated_at=now()
+         WHERE id=$2 AND google_subject IS NOT NULL AND password_hash IS NULL
+         RETURNING id
+       ), logged AS (
+         INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,new_value,actor_role,ip_address,user_agent)
+         SELECT $2,'LOCAL_PASSWORD_CREATED','USER',id::text,
+                jsonb_build_object('provider','LOCAL_PASSWORD'),$3,$4,$5 FROM updated
+       )
+       SELECT id FROM updated`,
+      [passwordHash, req.user!.sub, req.user!.role, req.ip, req.headers["user-agent"] ?? null],
+    );
+    if (!rows[0]) { res.status(409).json({ message: "Mật khẩu cục bộ đã được tạo ở một phiên khác." }); return; }
+    res.status(201).json({ message: "Đã tạo mật khẩu đăng nhập CharityConnect. Mật khẩu Google không được lưu trong hệ thống." });
   } catch (error) { next(error); }
 });
 
@@ -199,14 +245,161 @@ accountRouter.get("/admin/users", authenticate, authorize("ADMIN"), async (req, 
       [role ?? null, status ?? null],
     );
     const rows = await query(
-      `SELECT id,email,name,role,COALESCE(status::text,'ACTIVE') AS status,created_at,updated_at
-       FROM users
-       WHERE ($1::user_role IS NULL OR role=$1) AND ($2::user_status IS NULL OR status=$2)
-       ORDER BY created_at DESC LIMIT $3 OFFSET $4`,
+      `SELECT u.id,u.email,u.name,u.role,COALESCE(u.status::text,'ACTIVE') AS status,u.created_at,u.updated_at,
+              (u.google_subject IS NOT NULL) AS google_connected,
+              (u.password_hash IS NOT NULL) AS has_local_password,
+              CASE
+                WHEN u.google_subject IS NOT NULL AND u.password_hash IS NOT NULL THEN 'GOOGLE_AND_PASSWORD'
+                WHEN u.google_subject IS NOT NULL THEN 'GOOGLE'
+                ELSE 'PASSWORD'
+              END AS auth_provider,
+              (SELECT count(*)::int FROM account_sessions s
+               WHERE s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now()) AS active_session_count,
+              EXISTS(SELECT 1 FROM account_sessions s
+               WHERE s.user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now()
+                 AND s.last_seen_at>=now()-interval '15 minutes') AS is_online,
+              (SELECT max(s.last_seen_at) FROM account_sessions s WHERE s.user_id=u.id) AS last_login_at
+       FROM users u
+       WHERE ($1::user_role IS NULL OR u.role=$1) AND ($2::user_status IS NULL OR u.status=$2)
+       ORDER BY u.created_at DESC LIMIT $3 OFFSET $4`,
       [role ?? null, status ?? null, limit, offset],
     );
     res.setHeader("X-Total-Count", totalRows[0]?.count ?? "0");
     res.json(rows);
+  } catch (error) { next(error); }
+});
+
+// Admin chỉ được sửa tên/email đăng nhập, không được đổi role hay xem password hash.
+// Nếu email đổi, tất cả session và refresh token bị thu hồi nguyên tử trong cùng câu lệnh SQL.
+accountRouter.patch("/admin/users/:id/profile", authenticate, authorize("ADMIN"), async (req: AuthRequest, res, next) => {
+  try {
+    const input = adminProfileSchema.parse(req.body);
+    const rows = await query<{
+      id: string; email: string; name: string; role: Role; status: string;
+      google_connected: boolean; has_local_password: boolean; auth_provider: string;
+      revoked_session_count: number; revoked_refresh_token_count: number;
+    }>(
+      `WITH previous_user AS MATERIALIZED (
+         SELECT id,email,name,role,COALESCE(status::text,'ACTIVE') AS status,
+                google_subject,password_hash FROM users WHERE id=$3 FOR UPDATE
+       ), updated_user AS (
+         UPDATE users u SET name=COALESCE($1,u.name),email=COALESCE($2,u.email),updated_at=now()
+         FROM previous_user p WHERE u.id=p.id
+         RETURNING u.id,u.email,u.name,u.role,COALESCE(u.status::text,'ACTIVE') AS status,
+                   u.google_subject,u.password_hash,u.created_at,u.updated_at
+       ), revoked_sessions AS (
+         UPDATE account_sessions s SET revoked_at=now()
+         FROM previous_user p,updated_user u
+         WHERE s.user_id=u.id AND s.revoked_at IS NULL AND p.email IS DISTINCT FROM u.email
+         RETURNING s.id
+       ), revoked_tokens AS (
+         UPDATE refresh_tokens t SET revoked_at=now()
+         FROM previous_user p,updated_user u
+         WHERE t.user_id=u.id AND t.revoked_at IS NULL AND p.email IS DISTINCT FROM u.email
+         RETURNING t.id
+       ), logged AS (
+         INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,previous_value,new_value,actor_role,reason,ip_address,user_agent)
+         SELECT $4,'USER_PROFILE_UPDATED_BY_ADMIN','USER',u.id::text,
+                jsonb_build_object('email',p.email,'name',p.name,'role',p.role,'status',p.status),
+                jsonb_build_object('email',u.email,'name',u.name,'role',u.role,'status',u.status),
+                $5,$6,$7,$8
+         FROM previous_user p JOIN updated_user u ON u.id=p.id
+       )
+       SELECT u.id,u.email,u.name,u.role,u.status,u.created_at,u.updated_at,
+              (u.google_subject IS NOT NULL) AS google_connected,
+              (u.password_hash IS NOT NULL) AS has_local_password,
+              CASE WHEN u.google_subject IS NOT NULL AND u.password_hash IS NOT NULL THEN 'GOOGLE_AND_PASSWORD'
+                   WHEN u.google_subject IS NOT NULL THEN 'GOOGLE' ELSE 'PASSWORD' END AS auth_provider,
+              (SELECT count(*)::int FROM revoked_sessions) AS revoked_session_count,
+              (SELECT count(*)::int FROM revoked_tokens) AS revoked_refresh_token_count
+       FROM updated_user u`,
+      [input.name ?? null, input.email ?? null, req.params.id, req.user!.sub, req.user!.role,
+        input.reason, req.ip, req.headers["user-agent"] ?? null],
+    );
+    const user = rows[0];
+    if (!user) { res.status(404).json({ message: "Không tìm thấy tài khoản" }); return; }
+    res.json(user);
+  } catch (error) { next(error); }
+});
+
+// Admin chỉ khởi tạo email đặt lại mật khẩu. Token và mật khẩu không được trả về cho admin.
+// Tài khoản Google có thể dùng liên kết này để tạo mật khẩu cục bộ đầu tiên.
+accountRouter.post("/admin/users/:id/password-reset", authenticate, authorize("ADMIN"), async (req: AuthRequest, res, next) => {
+  try {
+    const input = adminPasswordResetSchema.parse(req.body);
+    const token = randomBytes(32).toString("hex");
+    const resetPath = `/dat-lai-mat-khau?token=${encodeURIComponent(token)}`;
+    const rows = await query<{
+      id: string; email: string; name: string; role: Role; status: string;
+      google_connected: boolean; has_local_password: boolean;
+    }>(
+      `WITH target AS MATERIALIZED (
+         SELECT id,email,name,role,COALESCE(status::text,'ACTIVE') AS status,
+                google_subject,password_hash FROM users WHERE id=$1 FOR UPDATE
+       ), invalidated AS (
+         UPDATE password_reset_tokens r SET used_at=now()
+         FROM target t WHERE r.user_id=t.id AND r.used_at IS NULL RETURNING r.id
+       ), created AS (
+         INSERT INTO password_reset_tokens(user_id,token_hash,expires_at)
+         SELECT id,$2,now()+interval '30 minutes' FROM target RETURNING id,user_id
+       ), queued AS (
+         INSERT INTO email_outbox(event_id,template,recipient_user_id,payload)
+         SELECT c.id::text,'PASSWORD_RESET',c.user_id,
+                jsonb_build_object('reset_path',$3::text,'expires_minutes',30,'requested_by_admin',true)
+         FROM created c
+       ), logged AS (
+         INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,new_value,actor_role,reason,ip_address,user_agent)
+         SELECT $4,'ADMIN_PASSWORD_RESET_QUEUED','USER',t.id::text,
+                jsonb_build_object('delivery','QUEUED','creates_local_password',t.password_hash IS NULL),
+                $5,$6,$7,$8 FROM target t JOIN created c ON c.user_id=t.id
+       )
+       SELECT t.id,t.email,t.name,t.role,t.status,
+              (t.google_subject IS NOT NULL) AS google_connected,
+              (t.password_hash IS NOT NULL) AS has_local_password
+       FROM target t JOIN created c ON c.user_id=t.id`,
+      [req.params.id, sha256(token), resetPath, req.user!.sub, req.user!.role,
+        input.reason, req.ip, req.headers["user-agent"] ?? null],
+    );
+    const user = rows[0];
+    if (!user) { res.status(404).json({ message: "Không tìm thấy tài khoản" }); return; }
+    res.status(202).json({
+      message: "Đã gửi liên kết đặt lại mật khẩu đến email của người dùng.",
+      delivery: "QUEUED",
+      password_setup_required: !user.has_local_password,
+      user,
+    });
+  } catch (error) { next(error); }
+});
+
+// Đăng xuất khẩn cấp mọi thiết bị mà không cần khóa tài khoản.
+accountRouter.post("/admin/users/:id/revoke-sessions", authenticate, authorize("ADMIN"), async (req: AuthRequest, res, next) => {
+  try {
+    const input = adminPasswordResetSchema.parse(req.body);
+    const rows = await query<{ id: string; revoked_session_count: number; revoked_refresh_token_count: number }>(
+      `WITH target AS MATERIALIZED (
+         SELECT id FROM users WHERE id=$1 FOR UPDATE
+       ), revoked_sessions AS (
+         UPDATE account_sessions s SET revoked_at=now() FROM target t
+         WHERE s.user_id=t.id AND s.revoked_at IS NULL RETURNING s.id
+       ), revoked_tokens AS (
+         UPDATE refresh_tokens r SET revoked_at=now() FROM target t
+         WHERE r.user_id=t.id AND r.revoked_at IS NULL RETURNING r.id
+       ), logged AS (
+         INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,new_value,actor_role,reason,ip_address,user_agent)
+         SELECT $2,'ADMIN_SESSIONS_REVOKED','USER',t.id::text,
+                jsonb_build_object(
+                  'revoked_sessions',(SELECT count(*) FROM revoked_sessions),
+                  'revoked_refresh_tokens',(SELECT count(*) FROM revoked_tokens)
+                ),$3,$4,$5,$6 FROM target t
+       )
+       SELECT t.id,
+              (SELECT count(*)::int FROM revoked_sessions) AS revoked_session_count,
+              (SELECT count(*)::int FROM revoked_tokens) AS revoked_refresh_token_count
+       FROM target t`,
+      [req.params.id, req.user!.sub, req.user!.role, input.reason, req.ip, req.headers["user-agent"] ?? null],
+    );
+    if (!rows[0]) { res.status(404).json({ message: "Không tìm thấy tài khoản" }); return; }
+    res.json({ message: "Đã đăng xuất tài khoản khỏi tất cả thiết bị.", ...rows[0] });
   } catch (error) { next(error); }
 });
 
@@ -221,19 +414,39 @@ accountRouter.patch("/admin/users/:id/status", authenticate, authorize("ADMIN"),
       res.status(409).json({ message: "Không thể tự khóa tài khoản quản trị đang dùng" });
       return;
     }
-    const before = (await query("SELECT id,email,name,role,COALESCE(status::text,'ACTIVE') AS status FROM users WHERE id=$1", [req.params.id]))[0];
-    if (!before) { res.status(404).json({ message: "Không tìm thấy tài khoản" }); return; }
-    const rows = await query(
-      "UPDATE users SET status=$1,updated_at=now() WHERE id=$2 RETURNING id,email,name,role,status,created_at,updated_at",
-      [input.status, req.params.id],
+    const rows = await query<{
+      id: string; email: string; name: string; role: Role; status: string;
+      revoked_session_count: number; revoked_refresh_token_count: number;
+    }>(
+      `WITH previous_user AS MATERIALIZED (
+         SELECT id,email,name,role,COALESCE(status::text,'ACTIVE') AS status FROM users WHERE id=$2 FOR UPDATE
+       ), updated_user AS (
+         UPDATE users u SET status=$1,updated_at=now()
+         FROM previous_user p WHERE u.id=p.id
+         RETURNING u.id,u.email,u.name,u.role,u.status,u.created_at,u.updated_at
+       ), revoked_sessions AS (
+         UPDATE account_sessions s SET revoked_at=now() FROM updated_user u
+         WHERE s.user_id=u.id AND s.revoked_at IS NULL RETURNING s.id
+       ), revoked_tokens AS (
+         UPDATE refresh_tokens t SET revoked_at=now() FROM updated_user u
+         WHERE t.user_id=u.id AND t.revoked_at IS NULL RETURNING t.id
+       ), logged AS (
+         INSERT INTO audit_logs(actor_id,action,entity_type,entity_id,previous_value,new_value,actor_role,reason,ip_address,user_agent)
+         SELECT $3,CASE WHEN $1='DISABLED' THEN 'USER_DISABLED' ELSE 'USER_ENABLED' END,
+                'USER',u.id::text,
+                jsonb_build_object('email',p.email,'name',p.name,'role',p.role,'status',p.status),
+                jsonb_build_object('email',u.email,'name',u.name,'role',u.role,'status',u.status),
+                $4,$5,$6,$7
+         FROM previous_user p JOIN updated_user u ON u.id=p.id
+       )
+       SELECT u.*,
+              (SELECT count(*)::int FROM revoked_sessions) AS revoked_session_count,
+              (SELECT count(*)::int FROM revoked_tokens) AS revoked_refresh_token_count
+       FROM updated_user u`,
+      [input.status, req.params.id, req.user!.sub, req.user!.role, input.reason ?? null,
+        req.ip, req.headers["user-agent"] ?? null],
     );
-    if (input.status === "DISABLED") {
-      await query("UPDATE account_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [req.params.id]);
-      await revokeAllRefreshTokens(String(req.params.id));
-    }
-    await audit(req.user!.sub, input.status === "DISABLED" ? "USER_DISABLED" : "USER_ENABLED", "USER", String(req.params.id), before, rows[0], {
-      actorRole: req.user!.role, reason: input.reason, ip: req.ip, userAgent: req.headers["user-agent"] as string | undefined,
-    });
+    if (!rows[0]) { res.status(404).json({ message: "Không tìm thấy tài khoản" }); return; }
     res.json(rows[0]);
   } catch (error) { next(error); }
 });

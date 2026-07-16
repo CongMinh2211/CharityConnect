@@ -94,6 +94,161 @@ def test_create_donation_rejects_missing_and_inactive_campaigns(client):
     assert api.post("/donations", json={"campaign_id": "00000000-0000-0000-0000-000000000010", "amount": 50000}).status_code == 409
 
 
+ADMIN = lambda: UserClaims(id="00000000-0000-0000-0000-000000000009", email="admin@test.vn", name="Admin", role="ADMIN")
+
+
+def test_large_donation_requires_admin_review(client):
+    api, db, http, _redis = client
+    http.responses.append(FakeResponse(payload={"eligible": True, "title": "Bệnh viện dã chiến"}))
+    donation_id = uuid4()
+    db.fetchrow_results.append({
+        "id": donation_id, "campaign_id": UUID("00000000-0000-0000-0000-000000000010"),
+        "campaign_title": "Bệnh viện dã chiến", "amount": 80_000_000, "anonymous": False,
+        "status": "PENDING_REVIEW", "created_at": datetime.now(timezone.utc),
+    })
+    response = api.post("/donations", json={"campaign_id": "00000000-0000-0000-0000-000000000010", "amount": 80_000_000, "honor_consent": True})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "PENDING_REVIEW"
+    assert body["proof_status"] == "PENDING_REVIEW"
+    assert body["ledger_position"] is None
+    # Chỉ ghi biên nhận; KHÔNG phát outbox / ghi sổ cái khi chưa duyệt.
+    assert len(db.executed) == 1
+
+
+def test_admin_pending_list_enforces_role(client):
+    api, db, _http, _redis = client
+    assert api.get("/admin/donations/pending").status_code == 403  # DONOR mặc định
+    main.app.dependency_overrides[require_user] = ADMIN
+    db.fetch_results.append([
+        {"id": uuid4(), "donor_name": "Nguyễn An", "campaign_id": uuid4(), "campaign_title": "Bệnh viện",
+         "amount": 80_000_000, "anonymous": False, "honor_consent": True, "status": "PENDING_REVIEW",
+         "created_at": datetime.now(timezone.utc), "receipt_number": "CC-2026-000200"},
+    ])
+    result = api.get("/admin/donations/pending").json()
+    assert len(result) == 1 and result[0]["amount"] == 80_000_000
+
+
+def test_admin_approve_emits_completion(client):
+    api, db, _http, _redis = client
+    main.app.dependency_overrides[require_user] = ADMIN
+    donation_id = uuid4()
+    db.fetchrow_results.extend([
+        {"id": donation_id, "donor_id": UUID("00000000-0000-0000-0000-000000000001"),
+         "campaign_id": UUID("00000000-0000-0000-0000-000000000010"), "campaign_title": "Bệnh viện",
+         "amount": 80_000_000, "anonymous": False, "status": "PENDING_REVIEW",
+         "created_at": datetime.now(timezone.utc), "receipt_number": "CC-2026-000200"},
+        None, None, {"position": 2, "entry_hash": "b" * 64},
+    ])
+    response = api.post(f"/admin/donations/{donation_id}/approve")
+    assert response.status_code == 200
+    assert response.json()["status"] == "COMPLETED"
+    assert response.json()["ledger_position"] == 2
+    assert response.json()["proof_status"] == "CONFIRMED"
+    # UPDATE + advisory lock + outbox insert.
+    assert len(db.executed) == 3
+
+
+def test_admin_approve_rejects_non_pending(client):
+    api, db, _http, _redis = client
+    main.app.dependency_overrides[require_user] = ADMIN
+    db.fetchrow_results.append({
+        "id": uuid4(), "donor_id": UUID("00000000-0000-0000-0000-000000000001"),
+        "campaign_id": uuid4(), "campaign_title": "X", "amount": 80_000_000, "anonymous": False,
+        "status": "COMPLETED", "created_at": datetime.now(timezone.utc), "receipt_number": "CC-2026-000201",
+    })
+    assert api.post(f"/admin/donations/{uuid4()}/approve").status_code == 409
+
+
+def test_admin_reject_pending_donation(client):
+    api, db, _http, _redis = client
+    main.app.dependency_overrides[require_user] = ADMIN
+    donation_id = uuid4()
+    db.fetchrow_results.append({"id": donation_id, "status": "REJECTED", "amount": 80_000_000})
+    response = api.post(f"/admin/donations/{donation_id}/reject", json={"reason": "Nghi ngờ nguồn tiền, cần xác minh."})
+    assert response.status_code == 200 and response.json()["status"] == "REJECTED"
+    db.fetchrow_results.append(None)
+    assert api.post(f"/admin/donations/{uuid4()}/reject", json={"reason": "Không hợp lệ"}).status_code == 409
+
+
+def test_public_reconciliation_journey(client):
+    api, db, http, _redis = client
+    donation_id = uuid4()
+    db.fetchrow_results.extend([
+        {"id": donation_id, "campaign_id": UUID("00000000-0000-0000-0000-000000000010"),
+         "campaign_title": "Bệnh viện dã chiến", "amount": 60_000_000, "status": "COMPLETED",
+         "created_at": datetime(2026, 7, 1, tzinfo=timezone.utc)},
+        {"position": 5, "entry_hash": "a" * 64, "created_at": datetime(2026, 7, 1, tzinfo=timezone.utc)},
+    ])
+    db.fetch_results.append([])  # verify_ledger -> chuỗi rỗng hợp lệ
+    http.responses.append(FakeResponse(payload={"credited": True, "locked": True, "contract_state": "DONATION_OPEN"}))
+    result = api.get("/transparency/reconciliation/CC-2026-000200").json()
+    assert [step["key"] for step in result["steps"]] == ["RECEIVED", "CAMPAIGN_CREDITED", "FUNDS_LOCKED", "TRUSTCHAIN"]
+    assert all(step["done"] for step in result["steps"])
+    assert result["reconciled"] is True and result["amount"] == 60_000_000
+
+
+def test_reconciliation_pending_stops_after_received(client):
+    api, db, http, _redis = client
+    db.fetchrow_results.extend([
+        {"id": uuid4(), "campaign_id": UUID("00000000-0000-0000-0000-000000000010"),
+         "campaign_title": "Bệnh viện dã chiến", "amount": 80_000_000, "status": "PENDING_REVIEW",
+         "created_at": datetime(2026, 7, 1, tzinfo=timezone.utc)},
+        None,  # chưa có bản ghi sổ cái
+    ])
+    db.fetch_results.append([])
+    http.responses.append(FakeResponse(payload={"credited": False, "locked": False, "contract_state": None}))
+    result = api.get("/transparency/reconciliation/CC-2026-000201").json()
+    assert result["steps"][0]["done"] is True
+    assert result["steps"][1]["done"] is False and result["steps"][3]["done"] is False
+    assert result["reconciled"] is False
+
+
+def test_reconciliation_does_not_claim_cross_service_success_when_campaign_is_down(client):
+    api, db, _http, _redis = client
+    db.fetchrow_results.extend([
+        {"id": uuid4(), "campaign_id": UUID("00000000-0000-0000-0000-000000000010"),
+         "campaign_title": "Chiến dịch đối soát", "amount": 60_000_000, "status": "COMPLETED",
+         "created_at": datetime(2026, 7, 1, tzinfo=timezone.utc)},
+        {"position": 5, "entry_hash": "a" * 64, "created_at": datetime(2026, 7, 1, tzinfo=timezone.utc)},
+    ])
+    db.fetch_results.append([])
+    # FakeHTTP không có response nên mô phỏng Campaign Service mất kết nối.
+    result = api.get("/transparency/reconciliation/CC-2026-CAMPAIGN-DOWN").json()
+    assert result["status"] == "COMPLETED"
+    assert result["campaign_reconciliation_available"] is False
+    assert result["steps"][1]["done"] is False
+    assert result["steps"][2]["done"] is False
+    assert result["reconciled"] is False
+
+
+def test_reconciliation_not_found(client):
+    api, db, *_ = client
+    db.fetchrow_results.append(None)
+    assert api.get("/transparency/reconciliation/KHONG-CO").status_code == 404
+
+
+def test_monthly_reconciliation_report_pdf(client):
+    api, db, *_ = client
+    db.fetchrow_results.extend([
+        {"total": 495_030_000, "count": 8},   # thu theo donations
+        {"total": 495_030_000, "count": 8},   # thu theo sổ cái
+        {"total": 42_500_000, "count": 1},    # chi
+    ])
+    db.fetchval_results.extend([0, 0])         # số dư đầu kỳ: donations, usage
+    db.fetch_results.extend([
+        [],  # verify_ledger -> chuỗi rỗng hợp lệ
+        [{"position": 1, "event_type": "DONATION_COMPLETED",
+          "public_payload": {"amount": 100000, "campaign_title": "Lớp học vùng cao"},
+          "created_at": datetime(2026, 7, 3, tzinfo=timezone.utc)}],
+    ])
+    response = api.get("/transparency/reconciliation-report?year=2026&month=7")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.content[:4] == b"%PDF"
+    assert api.get("/transparency/reconciliation-report?year=2026&month=13").status_code == 422
+
+
 def test_history_and_receipt(client):
     api, db, _http, _redis = client
     donation_id = uuid4()
@@ -224,6 +379,26 @@ def test_public_and_personal_analytics_are_reconciled(client):
     personal = api.get("/analytics/donations/me?period=7d")
     assert personal.status_code == 200
     assert personal.json()["totals"]["donation_amount"] == 200_000
+
+
+def test_top_donors_ranks_and_hides_anonymous(client):
+    api, db, *_ = client
+    db.fetch_results.append([
+        {"revealed_name": "Trần Bình", "has_consent": True, "total_amount": 5_000_000,
+         "donation_count": 3, "last_donation_at": datetime(2026, 6, 20, tzinfo=timezone.utc)},
+        {"revealed_name": None, "has_consent": False, "total_amount": 2_000_000,
+         "donation_count": 1, "last_donation_at": datetime(2026, 6, 10, tzinfo=timezone.utc)},
+    ])
+    result = api.get("/analytics/donations/top-donors?period=all&limit=5").json()
+    assert [donor["rank"] for donor in result["donors"]] == [1, 2]
+    assert result["donors"][0]["display_name"] == "Trần Bình"
+    assert result["donors"][0]["anonymous"] is False
+    assert result["donors"][1]["display_name"] == "Nhà hảo tâm ẩn danh"
+    assert result["donors"][1]["anonymous"] is True
+    assert result["donors"][0]["total_amount"] == 5_000_000
+    # donor_id không được lộ ra ngoài
+    assert "donor_id" not in result["donors"][0]
+    assert api.get("/analytics/donations/top-donors?period=bad").status_code == 422
 
 
 def test_organization_and_admin_analytics_enforce_roles(client):

@@ -1,8 +1,12 @@
 FROM node:22-alpine AS build
 WORKDIR /app
 ARG VITE_USE_MOCK_API=false
+ARG VITE_API_BASE_URL=https://charityconnect-gateway.onrender.com/api/v1
+ARG VITE_ASSISTANT_URL=https://charityconnect-assistant.onrender.com
 ARG VITE_GOOGLE_CLIENT_ID=
 ENV VITE_USE_MOCK_API=$VITE_USE_MOCK_API
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+ENV VITE_ASSISTANT_URL=$VITE_ASSISTANT_URL
 ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
 COPY package*.json tsconfig*.json vite.config.ts tailwind.config.js postcss.config.js index.html ./
 RUN npm ci --no-audit --no-fund

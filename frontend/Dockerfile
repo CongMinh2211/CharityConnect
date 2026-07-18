@@ -1,8 +1,8 @@
 FROM node:22-alpine AS build
 WORKDIR /app
-ARG VITE_USE_MOCK_API=false
-ARG VITE_API_BASE_URL=https://charityconnect-gateway.onrender.com/api/v1
-ARG VITE_ASSISTANT_URL=https://charityconnect-gateway.onrender.com/api/v1
+ARG VITE_USE_MOCK_API=true
+ARG VITE_API_BASE_URL=/api/v1
+ARG VITE_ASSISTANT_URL=/api/v1
 ARG VITE_GOOGLE_CLIENT_ID=
 ENV VITE_USE_MOCK_API=$VITE_USE_MOCK_API
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL

@@ -88,6 +88,55 @@ def test_new_charityconnect_topics_are_internal(monkeypatch, message):
     assert payload["searched_web"] is False
 
 
+def test_source_check_conversation_prompts_for_url_and_analyzes_it():
+    prompt = client.post("/assistant/chat", json={"message": "Kiểm tra một link kêu gọi"}).json()
+    assert prompt["scope"] == "INTERNAL"
+    assert "dán URL đầy đủ" in prompt["answer"]
+    assert prompt["actions"][0]["path"] == "/kiem-tra-nguon"
+
+    checked = client.post("/assistant/chat", json={
+        "message": "Kiểm tra https://charityconnect-7kep.onrender.com/"
+    }).json()
+    assert checked["scope"] == "INTERNAL"
+    assert checked["searched_web"] is False
+    assert "98/100" in checked["answer"]
+    assert any((source.get("url") or "").startswith("https://charityconnect-7kep") for source in checked["sources"])
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [("1", "dán URL đầy đủ"), ("2", "Đăng nhập người quyên góp"), ("3", "QR")],
+)
+def test_numbered_choices_resolve_to_internal_actions(choice, expected):
+    payload = client.post("/assistant/chat", json={"message": choice}).json()
+    assert payload["scope"] == "INTERNAL"
+    assert expected in payload["answer"]
+
+
+def test_external_question_after_internal_history_stays_external(monkeypatch):
+    async def fake_public_external_answer(_payload):
+        return main.ChatResponse(
+            answer="External answer.",
+            mode="DEMO",
+            scope="EXTERNAL_WEB",
+            searched_web=True,
+            sources=[main.AssistantSource(kind="WEB", title="Public source", url="https://example.org/")],
+            actions=[],
+            suggestions=[],
+        )
+
+    monkeypatch.setattr(main, "public_external_answer", fake_public_external_answer)
+    payload = client.post("/assistant/chat", json={
+        "message": "Cách trồng rau thủy canh?",
+        "history": [
+            {"role": "user", "content": "Tóm tắt thống kê CharityConnect"},
+            {"role": "assistant", "content": "Bạn có thể mở trang Thống kê."},
+        ],
+    }).json()
+    assert payload["scope"] == "EXTERNAL_WEB"
+    assert payload["searched_web"] is True
+
+
 def test_external_question_without_key_does_not_hallucinate(monkeypatch):
     main.rate_buckets.clear()
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

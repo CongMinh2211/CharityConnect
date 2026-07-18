@@ -3,9 +3,12 @@ import { roleFunctionGroups } from "../shared/lib/roleGuide";
 import type { AnchorOnchainResponse, AssistantRequest, AssistantResponse, MerkleProofExport, Role, RoleGuideResponse, SourceAnalysis, SourceAnalysisRequest, TrustChainHealth } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api/v1";
-// Local Vite runs should work without Docker. The production Docker image
-// explicitly builds with VITE_USE_MOCK_API=false and talks to the gateway.
+const ASSISTANT_BASE = String(import.meta.env.VITE_ASSISTANT_URL ?? "").replace(/\/+$/, "");
+// Static/local deployments can run without Docker. A deployed Assistant URL
+// is opt-in so an unavailable backend never creates repeated failed requests.
 export const isMockMode = import.meta.env.VITE_USE_MOCK_API !== "false";
+const remoteAssistantEnabled = import.meta.env.VITE_REMOTE_ASSISTANT_ENABLED === "true"
+  && /^https?:\/\//i.test(ASSISTANT_BASE);
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) { super(message); }
@@ -83,13 +86,26 @@ export async function downloadApi(path: string): Promise<Blob> {
 }
 
 export async function askAssistant(request: AssistantRequest): Promise<AssistantResponse> {
-  if (isMockMode) {
-    return mockApi<AssistantResponse>("/assistant/chat", {
+  if (!isMockMode) {
+    return api<AssistantResponse>("/assistant/chat", {
       method: "POST",
       body: JSON.stringify(request)
     });
   }
-  return api<AssistantResponse>("/assistant/chat", {
+  if (remoteAssistantEnabled) {
+    try {
+      const response = await fetch(`${ASSISTANT_BASE}/assistant/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+      });
+      if (!response.ok) throw new Error("Assistant unavailable");
+      return await response.json() as AssistantResponse;
+    } catch {
+      // Static deployments keep working from the verified local knowledge base.
+    }
+  }
+  return mockApi<AssistantResponse>("/assistant/chat", {
     method: "POST",
     body: JSON.stringify(request)
   });
@@ -97,21 +113,27 @@ export async function askAssistant(request: AssistantRequest): Promise<Assistant
 
 // Công cụ phân tích nguồn/lời kêu gọi từ thiện (AI một lần, không phải chatbot).
 export async function analyzeSource(request: SourceAnalysisRequest): Promise<SourceAnalysis> {
-  if (isMockMode) {
-    return mockApi<SourceAnalysis>("/assistant/analyze-source", {
-      method: "POST",
-      body: JSON.stringify(request)
-    });
+  if (!isMockMode) return api<SourceAnalysis>("/assistant/analyze-source", { method: "POST", body: JSON.stringify(request) });
+  if (remoteAssistantEnabled) {
+    try {
+      const response = await fetch(`${ASSISTANT_BASE}/assistant/analyze-source`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+      });
+      if (!response.ok) throw new Error("Analyzer unavailable");
+      return await response.json() as SourceAnalysis;
+    } catch {
+      // Fall through to the deterministic local analyzer.
+    }
   }
-  return api<SourceAnalysis>("/assistant/analyze-source", {
-    method: "POST",
-    body: JSON.stringify(request)
-  });
+  return mockApi<SourceAnalysis>("/assistant/analyze-source", { method: "POST", body: JSON.stringify(request) });
 }
 
 export async function getAssistantRoleGuide(role: Role | "PUBLIC", path = "/"): Promise<RoleGuideResponse> {
-  const assistantBase = isMockMode ? (import.meta.env.VITE_ASSISTANT_URL ?? "http://127.0.0.1:8001") : API_BASE;
+  const assistantBase = remoteAssistantEnabled ? ASSISTANT_BASE : API_BASE;
   try {
+    if (isMockMode && !remoteAssistantEnabled) throw new Error("Use local role guide");
     const response = await fetch(`${assistantBase}/assistant/role-guide?role=${role}&path=${encodeURIComponent(path)}`);
     if (!response.ok) throw new Error("Role guide unavailable");
     return await response.json() as RoleGuideResponse;

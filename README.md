@@ -178,7 +178,8 @@ Ngưỡng coverage mục tiêu: tối thiểu 80%. KPI vận hành gồm chain i
 - Root Directory: `frontend`
 - Build Command: `npm run build`
 - Output Directory: `dist`
-- Env cho bản preview không có backend: `VITE_USE_MOCK_API=true`
+- Env cho bản preview không có backend: `VITE_USE_MOCK_API=true`, `VITE_REMOTE_ASSISTANT_ENABLED=false`
+- Nếu dữ liệu nghiệp vụ vẫn chạy cục bộ nhưng có Assistant Service riêng: giữ `VITE_USE_MOCK_API=true`, đặt `VITE_REMOTE_ASSISTANT_ENABLED=true` và `VITE_ASSISTANT_URL=https://<assistant-domain>`
 - Env khi dùng backend thật: `VITE_USE_MOCK_API=false`, `VITE_API_BASE_URL=https://<gateway-domain>/api/v1`, `VITE_ASSISTANT_URL=https://<gateway-domain>/api/v1`
 
 ### Backend
@@ -208,9 +209,10 @@ Nếu tạo Render Web Service dạng Docker từ root repository, Render sẽ t
 Frontend có sẵn `frontend/.env.production` chỉ chứa biến public để deploy web tĩnh lên ngay:
 
 ```env
-VITE_USE_MOCK_API=false
-VITE_API_BASE_URL=https://charityconnect-gateway.onrender.com/api/v1
-VITE_ASSISTANT_URL=https://charityconnect-gateway.onrender.com/api/v1
+VITE_USE_MOCK_API=true
+VITE_API_BASE_URL=/api/v1
+VITE_ASSISTANT_URL=/api/v1
+VITE_REMOTE_ASSISTANT_ENABLED=false
 ```
 
 ## Production full stack trên Render
@@ -285,15 +287,17 @@ Không đưa API key vào frontend hoặc Git. Để chatbot dùng Claude/OpenAI
   - `ANTHROPIC_VERSION=2023-06-01`
   - `ANTHROPIC_WEB_SEARCH=true`
   - `ASSISTANT_RATE_LIMIT_PER_MINUTE=20`
-  - `CORS_ORIGINS=https://charityconnect.onrender.com,http://localhost:5173,http://127.0.0.1:5173`
+  - `CORS_ORIGINS=https://charityconnect-7kep.onrender.com,http://localhost:5173,http://127.0.0.1:5173`
 
 Sau đó frontend cần biến public:
 
 ```env
-VITE_ASSISTANT_URL=https://charityconnect-gateway.onrender.com/api/v1
+VITE_USE_MOCK_API=true
+VITE_ASSISTANT_URL=https://charityconnect-assistant.onrender.com
+VITE_REMOTE_ASSISTANT_ENABLED=true
 ```
 
-Nếu đổi URL assistant trong Render/Vercel, redeploy lại frontend vì biến `VITE_*` được đóng gói lúc build.
+Assistant Service tự phân hai nhánh: `INTERNAL` chỉ dùng kho dữ liệu CharityConnect và không bật công cụ web; `EXTERNAL_WEB` mới gọi web search và chỉ trả kết quả khi có URL nguồn. Nếu Assistant Service lỗi, frontend tự chuyển sang kho tri thức cục bộ. Sau khi đổi biến `VITE_*`, redeploy frontend vì Vite đóng gói các biến lúc build.
 
 ## Tài liệu đồ án
 

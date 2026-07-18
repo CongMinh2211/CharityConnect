@@ -79,7 +79,7 @@ describe("mock API demo flows", () => {
     const cases: Array<{ message: string; expected: string; action?: string }> = [
       { message: "hi", expected: "CharityConnect", action: "/kiem-tra-nguon" },
       { message: "ban la ai", expected: "nói không với từ thiện giả", action: "/kiem-chung" },
-      { message: "kiem tra link keu goi co dang tin khong", expected: "chấm điểm minh bạch", action: "/kiem-tra-nguon" },
+      { message: "kiem tra link keu goi co dang tin khong", expected: "dán URL đầy đủ", action: "/kiem-tra-nguon" },
       { message: "dang nhap nhu nao", expected: "ba vai trò", action: "/dang-nhap" },
       { message: "toi muon quyen gop", expected: "biên nhận CC", action: "/chien-dich" },
       { message: "to chuc tao chien dich", expected: "ngân sách và mốc tiến độ", action: "/to-chuc" },
@@ -97,6 +97,62 @@ describe("mock API demo flows", () => {
       expect(result.answer).toContain(item.expected);
       if (item.action) expect(result.actions.some((action) => action.path === item.action)).toBe(true);
     }
+  });
+
+  it("routes source checks and numbered follow-ups without repeating the generic fallback", async () => {
+    const sourcePrompt = await mockApi<AssistantResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: "Kiểm tra một link kêu gọi" }),
+    });
+    expect(sourcePrompt.scope).toBe("INTERNAL");
+    expect(sourcePrompt.answer).toContain("dán URL đầy đủ");
+    expect(sourcePrompt.actions.some((action) => action.path === "/kiem-tra-nguon")).toBe(true);
+
+    const punctuation = await mockApi<AssistantResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: ".", history: [{ role: "user", content: "Kiểm tra một link kêu gọi" }] }),
+    });
+    expect(punctuation.answer).toContain("chưa nhận được nội dung");
+    expect(punctuation.sources).toHaveLength(0);
+
+    const choiceOne = await mockApi<AssistantResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: "1" }),
+    });
+    expect(choiceOne.answer).toContain("dán URL đầy đủ");
+
+    const choiceTwo = await mockApi<AssistantResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: "2" }),
+    });
+    expect(choiceTwo.answer).toContain("biên nhận CC");
+
+    const choiceThree = await mockApi<AssistantResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: "3" }),
+    });
+    expect(choiceThree.answer).toContain("QR");
+  });
+
+  it("checks a URL inside chat and keeps unknown outside questions in the external branch", async () => {
+    const checked = await mockApi<AssistantResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify({ message: "Kiểm tra https://charityconnect-7kep.onrender.com/" }),
+    });
+    expect(checked.scope).toBe("INTERNAL");
+    expect(checked.answer).toContain("98/100");
+    expect(checked.sources.some((source) => source.url?.includes("charityconnect-7kep"))).toBe(true);
+
+    const external = await mockApi<AssistantResponse>("/assistant/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message: "Cách trồng rau thủy canh",
+        history: [{ role: "user", content: "Tóm tắt thống kê CharityConnect" }],
+      }),
+    });
+    expect(external.scope).toBe("EXTERNAL_WEB");
+    expect(external.searched_web).toBe(false);
+    expect(external.sources).toHaveLength(0);
   });
 
   it("scores the deployed CharityConnect URL as a trusted internal platform", async () => {

@@ -16,7 +16,15 @@ from pydantic import BaseModel, Field
 
 from . import content_verify
 from .guides import RoleGuideRole, role_guide
-from .knowledge import KNOWLEDGE_BASE, KNOWLEDGE_VERSION, classify_intent, fold, grounding_for, is_in_scope
+from .knowledge import (
+    KNOWLEDGE_BASE,
+    KNOWLEDGE_VERSION,
+    classify_intent,
+    fold,
+    grounding_for,
+    is_in_scope,
+    resolve_follow_up,
+)
 
 load_dotenv(Path(__file__).resolve().parents[3] / ".env")
 
@@ -156,6 +164,7 @@ THANKS_TOKENS = ("cam on", "thanks", "thank you", "tks")
 
 # Concise, knowledge-grounded answers keyed by intent name from classify_intent.
 INTENT_ANSWERS = {
+    "source_check": "Bạn hãy dán URL đầy đủ (bắt đầu bằng http:// hoặc https://) hoặc nội dung lời kêu gọi. CharityConnect sẽ kiểm tra whitelist nguồn, bằng chứng tài chính/pháp lý và các dấu hiệu rủi ro trước khi đưa ra kết luận sơ bộ.",
     "account": "Mở trang Đăng nhập và chọn nhanh một trong ba vai trò ở khung bên trái. Mỗi vai trò chỉ thấy đúng phần việc của mình.",
     "receipt": "Sau khi quyên góp, mở biên nhận để xem QR, ledger hash và Merkle proof; hoặc nhập mã CC-... tại trang Xác minh biên nhận. Biên nhận chỉ CONFIRMED khi hash-chain, proof và anchor đều hợp lệ.",
     "transparency": "TrustChain nối các sự kiện bằng SHA-256 trên canonical JSON và previous_hash, gom tối đa 100 ledger hash thành Merkle root rồi neo nội bộ hoặc Sepolia. Đây là bằng chứng chống sửa dữ liệu, không phải tiền số. Escrow theo dõi trạng thái quỹ khóa/giải ngân.",
@@ -164,6 +173,64 @@ INTENT_ANSWERS = {
     "admin": "Admin duyệt/từ chối hồ sơ tổ chức, chiến dịch, báo cáo tác động (từ chối phải có lý do) và tạo điểm neo Merkle cho các ledger entry chưa anchor. Các hành động quan trọng đều được ghi audit log.",
     "donation": "Đăng nhập người quyên góp, chọn chiến dịch đã duyệt còn hạn rồi xác nhận số tiền (có thể ẩn danh). Hệ thống ghi nhận giao dịch và phát hành biên nhận có mã CC-..., QR và ledger hash.",
 }
+
+URL_PATTERN = re.compile(r"https?://[^\s<>'\"()\]]+", re.IGNORECASE)
+
+
+def routed_payload(payload: ChatRequest) -> ChatRequest:
+    history = [turn.content for turn in payload.history]
+    resolved_message = resolve_follow_up(payload.message, history)
+    if resolved_message == payload.message:
+        return payload
+    return payload.model_copy(update={"message": resolved_message})
+
+
+def source_check_response(message: str) -> ChatResponse | None:
+    intent = classify_intent(message)
+    url_match = URL_PATTERN.search(message)
+    if intent != "source_check" and not url_match:
+        return None
+    if not url_match:
+        grounding = grounding_for(message)
+        return ChatResponse(
+            answer=INTENT_ANSWERS["source_check"],
+            mode="DEMO",
+            scope="INTERNAL",
+            searched_web=False,
+            sources=[AssistantSource(kind="INTERNAL", title=grounding.sources[0], path="/kiem-tra-nguon")],
+            actions=[AssistantAction(**action) for action in grounding.actions],
+            suggestions=grounding.suggestions,
+        )
+
+    url = url_match.group(0).rstrip(".,;:!?")
+    analysis = content_verify.analyze_source(url)
+    score = analysis["score"]
+    signal_lines = [
+        f"- {signal['message']}"
+        for signal in analysis.get("signals", [])[:3]
+    ]
+    evidence = "\n".join(signal_lines) if signal_lines else "- Chưa phát hiện tín hiệu rủi ro nổi bật trong dữ liệu hiện có."
+    source_name = analysis.get("source_name") or "Nguồn chưa nằm trong danh mục đã xác minh"
+    answer = (
+        f"Kết quả kiểm tra sơ bộ URL:\n"
+        f"- Nguồn: {source_name}\n"
+        f"- Điểm minh bạch: {score['total']}/100 (hạng {score['grade']})\n"
+        f"- Kết luận: {analysis['verdict']}\n"
+        f"{evidence}\n\n"
+        f"Khuyến nghị: {analysis['recommendation']}"
+    )
+    return ChatResponse(
+        answer=safe_answer(answer),
+        mode="DEMO",
+        scope="INTERNAL",
+        searched_web=False,
+        sources=[
+            AssistantSource(kind="INTERNAL", title="Công cụ kiểm tra nguồn CharityConnect", path="/kiem-tra-nguon"),
+            AssistantSource(kind="WEB", title=f"URL được kiểm tra: {source_name}", url=url),
+        ],
+        actions=[AssistantAction(label="Mở báo cáo kiểm tra đầy đủ", path="/kiem-tra-nguon")],
+        suggestions=["Điểm minh bạch được tính thế nào?", "Dấu hiệu lừa đảo thường gặp?", "Xem cảnh báo mới"],
+    )
 
 
 def offline_answer(message: str) -> str:
@@ -976,6 +1043,10 @@ async def public_external_answer(payload: ChatRequest) -> ChatResponse | None:
 @app.post("/assistant/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     enforce_rate_limit(request.client.host if request.client else "unknown")
+    payload = routed_payload(payload)
+    source_reply = source_check_response(payload.message)
+    if source_reply:
+        return source_reply
     receipt_reply = await verify_receipt_in_chat(payload.message)
     if receipt_reply:
         return receipt_reply

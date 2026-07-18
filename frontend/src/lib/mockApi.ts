@@ -947,6 +947,18 @@ async function publicExternalAnswer(message: string): Promise<MockExternalAnswer
   return await publicWeatherAnswer(message) ?? await publicWikipediaAnswer(message);
 }
 
+const MOCK_FOLLOW_UP_CHOICES: Record<string, string> = {
+  "1": "Kiểm tra một link kêu gọi",
+  "2": "Cách quyên góp?",
+  "3": "Cách xác minh biên nhận?",
+  "4": "Có cảnh báo lừa đảo từ thiện nào?",
+  "5": "Tóm tắt thống kê CharityConnect",
+};
+
+function extractAssistantUrl(message: string): string | null {
+  return message.match(/https?:\/\/[^\s<>'"()\]]+/i)?.[0]?.replace(/[.,;:!?]+$/, "") ?? null;
+}
+
 export async function mockApi<T>(path: string, options: RequestInit = {}): Promise<T> {
   await new Promise((resolve) => window.setTimeout(resolve, 140));
   const state = loadState();
@@ -1031,14 +1043,23 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
 
   if (pathname === "/assistant/chat" && method === "POST") {
     const rawMessage = String(body.message ?? "");
-    const message = rawMessage.toLocaleLowerCase("vi");
-    const normalizedMessage = normalizeVietnamese(rawMessage);
+    const choiceMessage = MOCK_FOLLOW_UP_CHOICES[rawMessage.trim().replace(/[.!?]+$/, "")];
+    const routedMessage = choiceMessage ?? rawMessage;
+    const message = routedMessage.toLocaleLowerCase("vi");
+    const normalizedMessage = normalizeVietnamese(routedMessage);
     const vnd = (value: number): string => new Intl.NumberFormat("vi-VN", { style: "currency", currency: "VND", maximumFractionDigits: 0 }).format(value);
     const mk = (answer: string, opts: { sources?: Array<{ kind: "INTERNAL" | "WEB"; title: string; path?: string; url?: string }>; actions?: Array<{ label: string; path: string }>; suggestions?: string[] } = {}): T => ({
       answer, mode: "DEMO", scope: "INTERNAL", searched_web: false, knowledge_version: "charityconnect-2026.07",
       sources: opts.sources ?? [{ kind: "INTERNAL", title: "Trợ lý CharityConnect", path: "/" }],
       actions: opts.actions ?? [], suggestions: opts.suggestions ?? [],
     } as T);
+
+    if (!/[a-z0-9À-ỹ]/iu.test(rawMessage)) {
+      return mk("Mình chưa nhận được nội dung cần kiểm tra. Bạn hãy nhập câu hỏi rõ hơn hoặc dán URL đầy đủ bắt đầu bằng https://.", {
+        sources: [],
+        suggestions: ["Kiểm tra một link kêu gọi", "Cách quyên góp?", "Tóm tắt thống kê"],
+      });
+    }
 
     // Chào hỏi / cảm ơn / giới thiệu — trả lời tự nhiên, xoay vòng, tránh lặp menu khô khan.
     const greetTokens = ["xin chao", "chao ban", "chao cau", "chao", "hello", "helo", "hi", "hey", "alo", "hallo"];
@@ -1060,11 +1081,27 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
         suggestions: ["Kiểm tra một link kêu gọi", "Cách quyên góp?", "Có cảnh báo nào mới?"],
       });
     }
-    if (/(kiem tra nguon|phan tich nguon|co phai lua dao|co dang tin|an toan khong|kiem tra link|check nguon)/.test(normalizedMessage)) {
-      return mk("Bạn dán link hoặc nội dung lời kêu gọi vào công cụ Kiểm tra nguồn — mình sẽ chấm điểm minh bạch và quét các dấu hiệu lừa đảo (tài khoản cá nhân, thẻ cào, tạo áp lực gấp gáp, nguồn ngoài whitelist...), rồi cho kết luận Đáng tin / Thận trọng / Rủi ro cao kèm khuyến nghị.", {
+    const sourceUrl = extractAssistantUrl(routedMessage);
+    const sourceCheckQuestion = /(kiem\s*(tra|chung|dinh)|phan tich|check).{0,35}(nguon|link|loi keu goi)|(?:link|loi keu goi).{0,35}(dang tin|uy tin|lua dao|kiem tra)/.test(normalizedMessage);
+    if (sourceUrl) {
+      const analysis = analyzeSourceMock({ url: sourceUrl });
+      const signalText = analysis.signals.length
+        ? analysis.signals.slice(0, 3).map((signal) => `- ${signal.message}`).join("\n")
+        : "- Chưa phát hiện tín hiệu rủi ro nổi bật trong dữ liệu hiện có.";
+      return mk(`Kết quả kiểm tra sơ bộ URL:\n- Nguồn: ${analysis.source_name ?? "Chưa nằm trong danh mục đã xác minh"}\n- Điểm minh bạch: ${analysis.score.total}/100 (hạng ${analysis.score.grade})\n- Kết luận: ${analysis.verdict}\n${signalText}\n\nKhuyến nghị: ${analysis.recommendation}`, {
+        sources: [
+          { kind: "INTERNAL", title: "Công cụ kiểm tra nguồn CharityConnect", path: "/kiem-tra-nguon" },
+          { kind: "WEB", title: `URL được kiểm tra: ${analysis.source_name ?? sourceUrl}`, url: sourceUrl },
+        ],
+        actions: [{ label: "Mở báo cáo kiểm tra đầy đủ", path: "/kiem-tra-nguon" }],
+        suggestions: ["Điểm minh bạch được tính thế nào?", "Dấu hiệu lừa đảo thường gặp?", "Xem cảnh báo mới"],
+      });
+    }
+    if (sourceCheckQuestion) {
+      return mk("Bạn hãy dán URL đầy đủ bắt đầu bằng http:// hoặc https://, hoặc gửi nội dung lời kêu gọi. CharityConnect sẽ kiểm tra whitelist nguồn, bằng chứng tài chính/pháp lý và các dấu hiệu rủi ro trước khi đưa ra kết luận sơ bộ.", {
         sources: [{ kind: "INTERNAL", title: "Công cụ Kiểm tra nguồn", path: "/kiem-tra-nguon" }],
         actions: [{ label: "Mở Kiểm tra nguồn", path: "/kiem-tra-nguon" }],
-        suggestions: ["Dấu hiệu fanpage giả mạo?", "Xem cảnh báo lừa đảo", "Điểm minh bạch tính thế nào?"],
+        suggestions: ["Dán URL cần kiểm tra", "Dấu hiệu fanpage giả mạo?", "Điểm minh bạch tính thế nào?"],
       });
     }
     if (normalizedMessage.includes("dang nhap") || normalizedMessage.includes("dang ky") || normalizedMessage.includes("tai khoan")) {
@@ -1098,8 +1135,11 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
     const outOfScope = ["thoi tiet", "ty gia", "chung khoan", "bong da", "phim", "nau an", "du lich"].some((term) => normalizedMessage.includes(term));
     const externalInfoQuestion = /(la gi|ai la|o dau|thong tin ve|tim hieu ve)/.test(normalizedMessage)
       && !["charityconnect", "trustchain", "quyen gop", "ung ho", "chien dich", "minh bach", "bien nhan", "so cai", "ledger", "hash", "tu thien", "canh bao", "kpi"].some((term) => normalizedMessage.includes(term));
+    const internalTopic = statsQuestion || alertQuestion || verifyQuestion
+      || ["charityconnect", "trustchain", "quyen gop", "ung ho", "chien dich", "minh bach", "bien nhan", "so cai", "ledger", "hash", "tu thien", "canh bao", "kpi", "du an", "chuc nang"].some((term) => normalizedMessage.includes(term));
+    const shouldUseExternal = outOfScope || externalInfoQuestion || (!internalTopic && normalizedMessage.trim().length >= 3);
 
-    const externalFallback = (outOfScope || externalInfoQuestion) ? await publicExternalAnswer(rawMessage) : null;
+    const externalFallback = shouldUseExternal ? await publicExternalAnswer(routedMessage) : null;
     if (externalFallback) {
       return {
         answer: externalFallback.answer,
@@ -1112,7 +1152,7 @@ export async function mockApi<T>(path: string, options: RequestInit = {}): Promi
         suggestions: externalFallback.suggestions,
       } as T;
     }
-    if (outOfScope || externalInfoQuestion) {
+    if (shouldUseExternal) {
       return {
         answer: "Câu hỏi này nằm ngoài dữ liệu CharityConnect và mình chưa tìm được nguồn công khai phù hợp trong chế độ web tĩnh. Bạn có thể hỏi thời tiết theo tỉnh/thành, hỏi khái niệm dạng “... là gì”, hoặc quay lại các nội dung kiểm chứng nguồn, thống kê, cảnh báo và minh bạch quyên góp.",
         mode: "DEMO",

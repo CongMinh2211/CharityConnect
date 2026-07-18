@@ -2,7 +2,7 @@ import unicodedata
 from dataclasses import dataclass
 
 
-KNOWLEDGE_VERSION = "charityconnect-2026.06"
+KNOWLEDGE_VERSION = "charityconnect-2026.07"
 
 KNOWLEDGE_BASE = """
 CharityConnect là website tiếng Việt kết nối người quyên góp, tổ chức từ thiện
@@ -62,7 +62,9 @@ IN_SCOPE_TERMS = (
     "kiểm duyệt", "xác minh", "ẩn danh", "vnd", "trang này", "chức năng",
     "merkle", "trustchain", "anchor", "điểm neo", "escrow", "quỹ khóa", "giải ngân",
     "thống kê", "biểu đồ", "analytics", "gmail", "email", "thư cảm ơn", "lịch sử",
-    "từ thiện", "hướng dẫn", "cách dùng", "vai trò",
+    "từ thiện", "hướng dẫn", "cách dùng", "vai trò", "kiểm tra nguồn",
+    "kiểm tra link", "kiểm tra một link", "link kêu gọi", "lời kêu gọi",
+    "nguồn kêu gọi", "đáng tin", "uy tín",
 )
 
 OUT_OF_SCOPE_TERMS = (
@@ -73,6 +75,16 @@ OUT_OF_SCOPE_TERMS = (
 _IN_SCOPE_FOLDED = tuple(fold(t) for t in IN_SCOPE_TERMS)
 _OUT_OF_SCOPE_FOLDED = tuple(fold(t) for t in OUT_OF_SCOPE_TERMS)
 _GREETINGS = {fold(g) for g in ("chào", "xin chào", "hello", "hi", "alo", "giúp tôi", "bạn làm được gì", "trợ giúp")}
+_FOLLOW_UP_TERMS = tuple(fold(term) for term in (
+    "cái đó", "cái này", "nó", "phần đó", "phần này", "tiếp tục", "giải thích thêm",
+))
+FOLLOW_UP_CHOICES = {
+    "1": "kiểm tra một link kêu gọi",
+    "2": "hướng dẫn quyên góp",
+    "3": "xác minh biên nhận",
+    "4": "xem cảnh báo lừa đảo từ thiện",
+    "5": "tóm tắt thống kê CharityConnect",
+}
 
 
 @dataclass(frozen=True)
@@ -96,6 +108,17 @@ DEFAULT_GROUNDING = Grounding(
 )
 
 INTENTS: tuple[Intent, ...] = (
+    Intent(
+        "source_check",
+        ("kiểm tra nguồn", "kiểm tra link", "kiểm tra một link", "link kêu gọi",
+         "lời kêu gọi", "nguồn kêu gọi",
+         "phân tích nguồn", "đáng tin", "uy tín", "có phải lừa đảo"),
+        Grounding(
+            ["Công cụ kiểm tra nguồn CharityConnect"],
+            [{"label": "Mở kiểm tra nguồn", "path": "/kiem-tra-nguon"}],
+            ["Dán URL cần kiểm tra", "Điểm minh bạch được tính thế nào?", "Dấu hiệu lừa đảo thường gặp?"],
+        ),
+    ),
     Intent(
         "receipt",
         ("biên nhận", "receipt", "qr", "mã cc", "confirmed", "xác minh biên nhận"),
@@ -164,14 +187,41 @@ INTENTS: tuple[Intent, ...] = (
 )
 
 
+def resolve_follow_up(message: str, history: list[str] | None = None) -> str:
+    """Resolve explicit numbered choices and punctuation-only follow-ups.
+
+    History is intentionally used only for a clearly dependent follow-up. A
+    previous CharityConnect question must not force a new unrelated question
+    into the internal branch.
+    """
+    stripped = fold(message).strip()
+    choice = stripped.strip(" .!?")
+    if choice in FOLLOW_UP_CHOICES:
+        return FOLLOW_UP_CHOICES[choice]
+    if not any(ch.isalnum() for ch in stripped):
+        for item in reversed(history or []):
+            candidate = item.strip()
+            if any(ch.isalnum() for ch in candidate):
+                return candidate
+    return message
+
+
 def is_in_scope(message: str, history: list[str] | None = None) -> bool:
-    folded = fold(message)
+    resolved = resolve_follow_up(message, history)
+    folded = fold(resolved)
     if any(term in folded for term in _OUT_OF_SCOPE_FOLDED):
         return False
-    combined = " ".join([folded, *(fold(item) for item in (history or []))])
-    if any(term in combined for term in _IN_SCOPE_FOLDED):
+    if any(term in folded for term in _IN_SCOPE_FOLDED):
         return True
-    return folded.strip(" !?.") in _GREETINGS
+    stripped = folded.strip(" !?.")
+    if stripped in _GREETINGS:
+        return True
+    if stripped in _FOLLOW_UP_TERMS:
+        return any(
+            any(term in fold(item) for term in _IN_SCOPE_FOLDED)
+            for item in reversed((history or [])[-3:])
+        )
+    return False
 
 
 def classify_intent(message: str) -> str:
